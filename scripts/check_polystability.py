@@ -114,15 +114,19 @@ def run_hybrid_pytorch_scipy(unique_matrices, kappa, h11, workers=1, seed=42):
     best_loss = torch.full((N,), float("inf"), dtype=dtype, device=device)
     best_t = torch.zeros((N, h11), dtype=dtype, device=device)
 
-    print(f"  [*] Pre-generating {total_samples} low-discrepancy Sobol sequence points...")
+    print(
+        f"  [*] Pre-generating {total_samples} low-discrepancy Sobol sequence points..."
+    )
     soboleng = torch.quasirandom.SobolEngine(dimension=h11, scramble=True, seed=seed)
     all_t_samples = soboleng.draw(total_samples).to(dtype=dtype, device=device)
     all_t_samples /= torch.sum(all_t_samples, dim=-1, keepdim=True)
-    
+
     # Mathematical optimization: Precompute T_si = sum_{j,k} kappa_ijk t_sj t_sk
     # This avoids constructing the gigantic M_t tensor for every matrix, saving ~20GB of RAM.
-    print(f"  [*] Precomputing topological intersection constants across all {total_samples} samples...")
-    T_s = torch.einsum('ijk,sj,sk->si', kappa_t, all_t_samples, all_t_samples)
+    print(
+        f"  [*] Precomputing topological intersection constants across all {total_samples} samples..."
+    )
+    T_s = torch.einsum("ijk,sj,sk->si", kappa_t, all_t_samples, all_t_samples)
 
     num_matrix_chunks = (N + matrix_chunk_size - 1) // matrix_chunk_size
     print(
@@ -134,13 +138,13 @@ def run_hybrid_pytorch_scipy(unique_matrices, kappa, h11, workers=1, seed=42):
         current_N = m_end - m_start
 
         K_chunk = K_t[m_start:m_end]
-        
+
         # t_M_t_sna = sum_i T_si * K_nia
-        t_M_t = torch.einsum('si,nia->sna', T_s, K_chunk)
+        t_M_t = torch.einsum("si,nia->sna", T_s, K_chunk)
         loss = torch.sum(t_M_t**2, dim=-1)
-        
+
         s_min_loss, s_min_idx = torch.min(loss, dim=0)
-        
+
         best_loss[m_start:m_end] = s_min_loss
         best_t[m_start:m_end] = all_t_samples[s_min_idx, :]
 
@@ -169,12 +173,10 @@ def run_hybrid_pytorch_scipy(unique_matrices, kappa, h11, workers=1, seed=42):
     if tasks:
         with mp.Pool(workers) as pool:
             for original_idx, is_stable in tqdm(
-                pool.imap_unordered(
-                    run_slsqp_worker, tasks, chunksize=100
-                ),
+                pool.imap_unordered(run_slsqp_worker, tasks, chunksize=100),
                 total=len(tasks),
                 desc="  SciPy SLSQP",
-                unit="matrix"
+                unit="matrix",
             ):
                 global_stable[original_idx] = is_stable
 
@@ -291,7 +293,10 @@ def main():
         help="Optional glob pattern(s) or file paths for raw_*.jsonl files (overrides input_dir)",
     )
     parser.add_argument(
-        "--workers", type=int, default=mp.cpu_count(), help=f"Number of parallel worker processes (default: {mp.cpu_count()})"
+        "--workers",
+        type=int,
+        default=mp.cpu_count(),
+        help=f"Number of parallel worker processes (default: {mp.cpu_count()})",
     )
     parser.add_argument(
         "--db_path",
@@ -300,15 +305,10 @@ def main():
         help="Path to CICY database JSON file (default: databases/full_cicy_database.json)",
     )
     parser.add_argument(
-        "--transfer",
-        action="store_true",
-        help="Process transfer learning runs automatically adjusting default directories (default: False)",
-    )
-    parser.add_argument(
         "--input_dir",
         type=str,
-        default=None,
-        help="Folder containing raw_*.jsonl solutions to check (default: Sol_Runs or Sol_Runs_TL if --transfer)",
+        default="Sol_Runs",
+        help="Folder containing raw_*.jsonl solutions to check (default: Sol_Runs)",
     )
     args = parser.parse_args()
 
@@ -322,13 +322,9 @@ def main():
                 filepaths.append(pattern)
     else:
         in_dir = args.input_dir
-        if not in_dir:
-            in_dir = "Sol_Runs_TL" if args.transfer else "Sol_Runs"
-
-        if args.transfer:
-            filepaths = glob.glob(os.path.join(in_dir, "**", "raw_cy_*.jsonl"), recursive=True)
-        else:
-            filepaths = glob.glob(os.path.join(in_dir, "raw_cy_*.jsonl"))
+        filepaths = glob.glob(
+            os.path.join(in_dir, "**", "raw_cy_*.jsonl"), recursive=True
+        )
 
     # Sort the list to guarantee deterministic processing order
     filepaths = sorted(list(set(filepaths)))

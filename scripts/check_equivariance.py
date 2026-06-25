@@ -355,7 +355,7 @@ def process_manifold(cy, h11, g, db, n_workers, raw_path=None):
 
     if raw_path is None:
         raw_path = f"Sol_Runs/raw_cy_{cy}_h11_{h11}_g_{g}.jsonl"
-        
+
     if not os.path.exists(raw_path):
         print(f"  Error: {raw_path} not found.")
         return None
@@ -482,27 +482,51 @@ def process_manifold(cy, h11, g, db, n_workers, raw_path=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Check equivariance of line bundle solutions under freely acting symmetries.")
-    parser.add_argument("--workers", type=int, default=cpu_count(), help=f"Number of worker processes to use (default: {cpu_count()})")
-    parser.add_argument("--cy", type=int, nargs="+", help="List of CY IDs to process (default: all found in input_dir)")
-    parser.add_argument("--transfer", action="store_true", help="Process transfer learning runs automatically adjusting default paths (default: False)")
-    parser.add_argument("--db_path", type=str, default="databases/full_cicy_database.json", help="Path to the CICY database JSON file (default: databases/full_cicy_database.json)")
-    parser.add_argument("--input_dir", type=str, default=None, help="Directory containing raw_cy_*.jsonl files (default: Sol_Runs or Sol_Runs_TL if --transfer)")
-    parser.add_argument("--output_csv", type=str, default=None, help="Output path for CSV stats (default: Analysis_Plots/equivariance_stats.csv or Analysis_Plots_TL/equivariance_stats_TL.csv if --transfer)")
+    parser = argparse.ArgumentParser(
+        description="Check equivariance of line bundle solutions under freely acting symmetries."
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=cpu_count(),
+        help=f"Number of worker processes to use (default: {cpu_count()})",
+    )
+    parser.add_argument(
+        "--cy",
+        type=int,
+        nargs="+",
+        help="List of CY IDs to process (default: all found in input_dir)",
+    )
+    parser.add_argument(
+        "--db_path",
+        type=str,
+        default="databases/full_cicy_database.json",
+        help="Path to the CICY database JSON file (default: databases/full_cicy_database.json)",
+    )
+    parser.add_argument(
+        "--input_dir",
+        type=str,
+        default="Sol_Runs",
+        help="Directory containing raw_cy_*.jsonl files (default: Sol_Runs)",
+    )
+    parser.add_argument(
+        "--output_csv",
+        type=str,
+        default="Analysis_Plots/equivariance_stats.csv",
+        help="Output path for CSV stats (default: Analysis_Plots/equivariance_stats.csv)",
+    )
     args = parser.parse_args()
 
     with open(args.db_path, "r") as f:
         db = json.load(f)
 
-    if args.transfer:
-        out_csv = args.output_csv if args.output_csv else "Analysis_Plots_TL/equivariance_stats_TL.csv"
-        in_dir = args.input_dir if args.input_dir else "Sol_Runs_TL"
-    else:
-        out_csv = args.output_csv if args.output_csv else "Analysis_Plots/equivariance_stats.csv"
-        in_dir = args.input_dir if args.input_dir else "Sol_Runs"
-        
+    out_csv = args.output_csv
+    in_dir = args.input_dir
+
     os.makedirs(os.path.dirname(out_csv), exist_ok=True)
-    raw_files = glob.glob(os.path.join(in_dir, "**", "raw_cy_*_h11_*_g_*.jsonl"), recursive=True)
+    raw_files = glob.glob(
+        os.path.join(in_dir, "**", "raw_cy_*_h11_*_g_*.jsonl"), recursive=True
+    )
 
     results = []
 
@@ -524,11 +548,11 @@ def main():
 
             row = process_manifold(cy_id, h11, g, db, args.workers, raw_path=f)
             if row:
-                if args.transfer:
-                    # Capture ttype from the directory structure (e.g., Sol_Runs_TL/cross_gamma/...)
-                    path_parts = f.split(os.sep)
-                    ttype = path_parts[-2] if len(path_parts) >= 2 and path_parts[-2] != "Sol_Runs_TL" else "transfer"
-                    row["tl_type"] = ttype
+                # Capture ttype from the directory structure if it is nested
+                path_parts = f.split(os.sep)
+                in_dir_parts = in_dir.rstrip(os.sep).split(os.sep)
+                if len(path_parts) > len(in_dir_parts) + 1:
+                    row["tl_type"] = path_parts[len(in_dir_parts)]
                 results.append(row)
                 # Intermediate save
                 pd.DataFrame(results).to_csv(out_csv, index=False)

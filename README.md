@@ -1,6 +1,6 @@
 # LB-Explorer
 
-LB-Explorer is a pure GPU-accelerated PPO agent for discovering holomorphic line bundle sums on Calabi-Yau threefolds.
+This repository contains the code and tools necessary to reproduce the findings of the paper [arXiv:XXXX.XXXXX](https://arxiv.org/abs/XXXX.XXXXX).
 
 ## Installation and Requirements
 
@@ -8,7 +8,7 @@ The primary environment for running the explorer and its evaluation scripts is d
 You can create a conda environment as follows:
 
 ```bash
-conda create -n cy-explorer python=3.10
+conda create -n cy-explorer python=3.9
 conda activate cy-explorer
 pip install -r requirements.txt
 ```
@@ -16,14 +16,63 @@ pip install -r requirements.txt
 ### SageMath Dependency
 The script `scripts/generate_sym_groups.py` explicitly requires **SageMath** to compute topological and configuration symmetry groups for CICYs. Since SageMath is a large system dependency, it is **not** included in the standard `requirements.txt`.
 
-If you wish to run `generate_sym_groups.py`, you must ensure SageMath is installed on your system and run the script from a SageMath-enabled Python environment (or by invoking `sage -python scripts/generate_sym_groups.py`).
+If you wish to run `generate_sym_groups.py`, you must ensure SageMath is installed on your system and run the script from a SageMath-enabled Python environment (or by invoking `sage -python scripts/generate_sym_groups.py`). We, however, provide `databases/full_cicy_database.json` with the groups for all CICYs already generated.
 
 ## Database and Inputs
 
 The code uses a unified database structure to maintain Calabi-Yau data.
 By default, the master database should be located at `databases/full_cicy_database.json`.
 
-Before running the reinforcement learning agent, you must parse the master database into the expected geometry format. A helper script is provided to generate these inputs automatically:
+### Database Structure
+
+The `databases/full_cicy_database.json` file contains a JSON array of Calabi-Yau threefold geometries and their properties. Each entry is a dictionary containing topological data, intersection polynomials, symmetry group information, and configuration matrices. This database is built based on the one provided by [arxiv:1708.07907](https://arxiv.org/abs/1708.07907).
+
+Here is an example of the entry associated with `Num` 7890:
+
+```json
+{
+    "Num": 7890,
+    "H11": 1,
+    "H21": 101,
+    "C2": [
+        50
+    ],
+    "Conf": [
+        [
+            5
+        ]
+    ],
+    "Favour": true,
+    "KahlerPos": true,
+    "IsProduct": false,
+    "Ring": "5*J(1)^3",
+    "Group Structure Conf": "1",
+    "Group Order Conf": 1,
+    "Group Generators Conf": [],
+    "Group Structure": "1",
+    "Group Order": 1,
+    "Group Generators": [],
+    "Freely Acting Symmetry": true,
+    "Gamma Order": [
+        5,
+        25
+    ],
+    "Mapped Freely Acting Symmetries": [
+        [
+            "C5",
+            5,
+            []
+        ],
+        [
+            "C25",
+            25,
+            []
+        ]
+    ]
+}
+```
+
+Before running LB-Explorer, you must parse the database into the expected geometry format. A helper script is provided to generate these inputs automatically:
 
 ```bash
 python scripts/create_LB-Explorer_inputs.py --db_path databases/full_cicy_database.json --output_dir cy_geometry_exports
@@ -33,50 +82,134 @@ This will populate `cy_geometry_exports/` with `all_geometry_h11_{h11}.json` fil
 
 ## Running the Explorer
 
-You can run the main agent using the `LB-Explorer.py` script. It features a comprehensive Command Line Interface:
+`LB-Explorer.py` trains a transformer-based PPO agent to generate integer K-matrices whose columns encode the Chern classes of line bundle factors. It evaluates candidates against geometric constraints (anomaly cancellation, Bogomolov stability, chiral indices) and saves valid solutions to JSONL files.
 
+### Arguments for `LB-Explorer.py`:
+
+- `-h, --help`: show this help message and exit
+- `--h11`: H11 of the manifold
+- `--cy_index`: Index of the CY manifold in database
+- `--gamma`: Specific target Gamma value to use.
+- `--db_dir`: Directory containing the parsed geometry json files (default: `cy_geometry_exports`)
+- `--rank`: Rank of the vector bundle
+- `--m_bound`: Max integer charge bound for matrices
+- `--stability_range`: Integer range for generating stability test vectors (e.g. 2 means [-2, 2])
+- `--enforce_bounds`: Enforce charge bounds strictly during validation
+- `--anom_weight`: Weight for Anomaly Cancellation penalty
+- `--stab_weight`: Weight for Bogomolov Stability bounds penalty
+- `--sum_weight`: Weight for Chiral Index Sum penalty
+- `--rng_weight`: Weight for Chiral Index Range bounds penalty
+- `--pair_weight`: Weight for Pairwise Index penalty
+- `--bnd_weight`: Weight for Charge Bounds exceeding penalty
+- `--anom_coef`, `--stab_coef`, `--sum_coef`, `--rng_coef`, `--pair_coef`, `--bnd_coef`: Coefficient flags for respective penalties
+- `--embedding_dim`: Embedding dimension for the Transformer
+- `--num_heads`: Number of attention heads
+- `--num_layers`: Number of Transformer layers
+- `--episodes`: Total number of RL training episodes
+- `--batch_size`: Parallel generation batch size (scales with VRAM)
+- `--use_minibatches`: Enable mini-batching during PPO update for stability
+- `--minibatch_size`: Size of mini-batches if enabled
+- `--ppo_epochs`: Number of PPO optimization epochs per batch
+- `--lr`: Adam Optimizer Learning Rate
+- `--entropy_start`: Initial entropy coefficient (Exploration)
+- `--entropy_end`: Final entropy coefficient (Exploitation)
+- `--discount`: Gamma discount factor for RL rewards
+- `--gae_lambda`: Lambda parameter for GAE
+- `--clip_eps`: PPO Policy clipping parameter
+- `--vf_coef`: Value Function loss coefficient
+- `--disable_novelty_penalty`: Turn off penalty for repeating previously generated matrices
+- `--novelty_penalty_factor`: Multiplier for score if matrix is a duplicate (e.g. 0.25 cuts score by 75 percent)
+- `--novelty_buffer_size`: Size of the pure GPU FIFO rolling history buffer
+- `--device`: Compute device to run on (e.g., cuda, cpu)
+- `--run_id`: Suffix ID to append to generated output files
+- `--resume`: Resume training from existing checkpoint if found
+- `--no_plot`: Disable generating matplotlib charts
+- `--track_diversity`: Compute batch diversity metric on GPU (off by default)
+- `--plot_only`: Only generate charts from checkpoint and exit immediately
+- `--no_bonus`: Disable the +5.0 bonus reward for perfect solutions
+- `--phase0_trigger`: Stop training when any of Sum/Rng/Pair cont score exceeds this threshold (0=disabled)
+- `--seed`: Global random seed for reproducibility
+
+**Example Usage**:
 ```bash
 python LB-Explorer.py --h11 6 --cy_index 0 --episodes 10000000 --batch_size 8192 --db_dir cy_geometry_exports
-```
-
-For a full list of hyperparameters, reward weights, and architectures, run:
-```bash
-python LB-Explorer.py --help
 ```
 
 ## Post-Processing Scripts
 
 All evaluation and filtering scripts located in `scripts/` are designed to be run standalone and have an explicit CLI interface with sensible defaults.
 
-### 1. Validity Check
-Checks mathematical validity and bounds.
+### 1. `scripts/create_LB-Explorer_inputs.py`
+Generates geometry input files from the full CICY database for the RL agent to use.
+- `--db_path`: Path to input full_cicy_database.json (default: `databases/full_cicy_database.json`)
+- `--output_dir`: Directory to save generated geometry inputs (default: `cy_geometry_exports`)
+
+**Example Usage**:
 ```bash
-python scripts/check_validity_solutions.py --help
+python scripts/create_LB-Explorer_inputs.py --db_path databases/full_cicy_database.json --output_dir cy_geometry_exports
 ```
 
-### 2. Equivariance Check
-Checks if line bundle solutions are equivariant under freely acting symmetries.
+### 2. `scripts/check_validity_solutions.py`
+Standalone Solution Verifier for Line Bundle Solutions. Evaluates candidate integer matrices against physics constraints.
+- `--rank`: Rank of the vector bundle (default: 5)
+- `--m_bound`: Max integer charge bound for matrices (default: 5)
+- `--workers`: Number of worker processes to use (default: 8)
+- `--db_path`: Path to the CICY database JSON file (default: `databases/full_cicy_database.json`)
+- `--input_dir`: Directory containing the raw_cy_*.jsonl files to verify (default: `Sol_Runs`). Use `Sol_Runs_TL` for transfer learning outputs.
+
+**Example Usage**:
 ```bash
-python scripts/check_equivariance.py --help
+python scripts/check_validity_solutions.py --rank 5 --workers 4 --input_dir Sol_Runs
 ```
 
-### 3. Exact Polystability
-Verifies exact poly-stability (existence of positive Kahler parameter vectors).
+### 3. `scripts/check_equivariance.py`
+Check equivariance of line bundle solutions under freely acting symmetries.
+- `--workers`: Number of worker processes to use (default: 8)
+- `--cy`: List of CY IDs to process (default: all found in input_dir)
+- `--db_path`: Path to the CICY database JSON file (default: `databases/full_cicy_database.json`)
+- `--input_dir`: Directory containing raw_cy_*.jsonl files (default: `Sol_Runs`)
+- `--output_csv`: Output path for CSV stats (default: `Analysis_Plots/equivariance_stats.csv`)
+
+**Example Usage**:
 ```bash
-python scripts/check_polystability.py --help
+python scripts/check_equivariance.py --cy 7890 --workers 8
 ```
 
-### 4. Line Bundle Spectrum
-Filters solutions according to exact spectrum requirements.
+### 4. `scripts/check_polystability.py`
+Check exact polystability of line bundle matrices by verifying existence of Kahler parameters.
+- `files`: Optional glob pattern(s) or file paths for raw_*.jsonl files (overrides input_dir)
+- `--workers`: Number of parallel worker processes (default: 8)
+- `--db_path`: Path to CICY database JSON file (default: `databases/full_cicy_database.json`)
+- `--input_dir`: Folder containing raw_*.jsonl solutions to check (default: `Sol_Runs`)
+
+**Example Usage**:
 ```bash
-python scripts/check_lb_spec.py --help
+python scripts/check_polystability.py --workers 4
 ```
 
-### 5. Symmetry Generation (Requires SageMath)
-Computes symmetry groups for canonicalization.
+### 5. `scripts/check_lb_spec.py`
+Check exact spectrum and equivariance constraints for line bundle solutions.
+- `--kmax`: Max charge bound for matrix elements (default: 2)
+- `--workers`: Number of parallel workers (default: 8)
+- `--cy`: List of CY IDs to process (default: all)
+- `--gamma`: Optional: process only this gamma value
+- `--only_trivial`: Only process manifolds with trivial equivariance (default: False)
+- `--db_path`: Path to CICY database JSON file (default: `databases/full_cicy_database.json`)
+- `--input_dir`: Folder containing raw_cy_*.jsonl solutions to check (default: `Sol_Runs`)
+- `--output_dir`: Folder to save spectrum CSVs (default: `Analysis_Plots/Spectrum`)
+
+**Example Usage**:
 ```bash
-python scripts/generate_sym_groups.py --help
+python scripts/check_lb_spec.py --kmax 2 --cy 7890
 ```
 
-## Handoff Information
-You can find more detailed task progressions and updates in `Handoff/handoff.md` and `Handoff/skills.md`.
+### 6. `scripts/generate_sym_groups.py`
+Generate topological and configuration symmetry groups for CICYs. NOTE: Running this script requires SageMath to be installed on your system.
+- `--db_path`: Path to input CICY database JSON (default: `databases/full_cicy_database.json`)
+- `--output_path`: Path to save output JSON with symmetries (default: `databases/cicy_symmetries.json`)
+
+**Example Usage**:
+```bash
+sage -python scripts/generate_sym_groups.py --db_path databases/full_cicy_database.json
+```
+

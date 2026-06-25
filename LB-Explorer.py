@@ -541,7 +541,7 @@ def train_ppo_gpu(env, validator, novelty_buffer, model, optimizer, device, epis
                   phase0_trigger=0):
     
     model.train()
-    scaler = torch.amp.GradScaler('cuda')
+    scaler = torch.amp.GradScaler(device.type, enabled=(device.type == 'cuda'))
 
     history = []
     metrics_keys = ['anom_bin', 'anom_cont', 'stab_bin', 'stab_cont', 'rng_bin', 'rng_cont',
@@ -594,7 +594,7 @@ def train_ppo_gpu(env, validator, novelty_buffer, model, optimizer, device, epis
             batch_input_states, batch_actions, batch_log_probs, batch_values = [], [], [], []
             
             with torch.no_grad():
-                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
                     for step in range(env.MATRIX_SIZE):
                         current_input = states[:, :step+1].clone()
                         batch_input_states.append(current_input)
@@ -717,7 +717,7 @@ def train_ppo_gpu(env, validator, novelty_buffer, model, optimizer, device, epis
                     new_log_probs, new_values, new_entropies = [], [], []
                     optimizer.zero_grad()
                     
-                    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
                         for step in range(env.MATRIX_SIZE):
                             mb_input = batch_input_states[step][mb_inds]
                             mb_acts = batch_actions[step][mb_inds]
@@ -922,7 +922,7 @@ if __name__ == "__main__":
     parser.add_argument('--novelty_buffer_size', type=int, default=2000, help='Size of the pure GPU FIFO rolling history buffer')
 
     # Run Configuration
-    parser.add_argument('--device', type=str, default='cuda', help='Compute device to run on (e.g., cuda, cpu)')
+    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Compute device to run on (e.g., cuda, cpu)')
     parser.add_argument('--run_id', type=str, default='', help='Suffix ID to append to generated output files')
     parser.add_argument('--resume', action='store_true', help='Resume training from existing checkpoint if found')
     parser.add_argument('--no_plot', action='store_true', help='Disable generating matplotlib charts')

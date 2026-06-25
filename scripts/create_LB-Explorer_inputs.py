@@ -61,6 +61,7 @@ def main():
 
         c2_tx = entry.get("C2", entry.get("c2_tx", []))
         poly_str = entry.get("Ring", entry.get("intersecting_polynomial", "0"))
+        poly_str = str(poly_str)
         kappa = parse_polynomial_to_tensor(poly_str, h11)
         
         intersection_numbers = []

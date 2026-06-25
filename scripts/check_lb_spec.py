@@ -517,25 +517,19 @@ def main():
     parser.add_argument("--workers", type=int, default=cpu_count(), help=f"Number of parallel workers (default: {cpu_count()})")
     parser.add_argument("--cy", type=int, nargs="+", help="List of CY IDs to process (default: all)")
     parser.add_argument("--gamma", type=int, help="Optional: process only this gamma value")
-    parser.add_argument("--transfer", action="store_true", help="Process transfer learning runs automatically adjusting default directories (default: False)")
     parser.add_argument("--only_trivial", action="store_true", help="Only process manifolds with trivial equivariance (default: False)")
     parser.add_argument("--db_path", type=str, default="databases/full_cicy_database.json", help="Path to CICY database JSON file (default: databases/full_cicy_database.json)")
-    parser.add_argument("--input_dir", type=str, default=None, help="Folder containing raw_cy_*.jsonl solutions to check (default: Sol_Runs or Sol_Runs_TL if --transfer)")
-    parser.add_argument("--output_dir", type=str, default=None, help="Folder to save spectrum CSVs (default: Analysis_Plots/Spectrum or Analysis_Plots_TL/Spectrum if --transfer)")
+    parser.add_argument("--input_dir", type=str, default="Sol_Runs", help="Folder containing raw_cy_*.jsonl solutions to check (default: Sol_Runs)")
+    parser.add_argument("--output_dir", type=str, default="Analysis_Plots/Spectrum", help="Folder to save spectrum CSVs (default: Analysis_Plots/Spectrum)")
     args = parser.parse_args()
 
     with open(args.db_path, "r") as f:
         db = json.load(f)
 
     in_dir = args.input_dir
-    if not in_dir:
-        in_dir = "Sol_Runs_TL" if args.transfer else "Sol_Runs"
-        
     out_csv_dir = args.output_dir
-    if not out_csv_dir:
-        out_csv_dir = "Analysis_Plots_TL/Spectrum" if args.transfer else "Analysis_Plots/Spectrum"
 
-    if args.cy and not args.transfer:
+    if args.cy:
         for cy_id in args.cy:
             # Find manifold info from DB
             entry = next((e for e in db if e.get("Num", e.get("id")) == cy_id), None)
@@ -562,13 +556,10 @@ def main():
         # Process all raw files
         gamma_suffix = f"g_{args.gamma}" if args.gamma else "g_*"
         
-        if args.transfer:
-            raw_files = glob.glob(os.path.join(in_dir, "**", f"raw_cy_*_h11_*_{gamma_suffix}.jsonl"), recursive=True)
-            if args.cy:
-                cy_set = set(args.cy)
-                raw_files = [f for f in raw_files if int(re.search(r"cy_(\d+)", f).group(1)) in cy_set]
-        else:
-            raw_files = glob.glob(os.path.join(in_dir, f"raw_cy_*_h11_*_{gamma_suffix}.jsonl"))
+        raw_files = glob.glob(os.path.join(in_dir, "**", f"raw_cy_*_h11_*_{gamma_suffix}.jsonl"), recursive=True)
+        if args.cy:
+            cy_set = set(args.cy)
+            raw_files = [f for f in raw_files if int(re.search(r"cy_(\d+)", f).group(1)) in cy_set]
             
         for f in raw_files:
             m = re.search(r"raw_cy_(\d+)_h11_(\d+)_g_(\d+)", f)
