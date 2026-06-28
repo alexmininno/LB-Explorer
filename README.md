@@ -75,7 +75,9 @@ Here is an example of the entry associated with `Num` 7890:
 Before running LB-Explorer, you must parse the database into the expected geometry format. A helper script is provided to generate these inputs automatically:
 
 ```bash
-python scripts/create_LB-Explorer_inputs.py --db_path databases/full_cicy_database.json --output_dir cy_geometry_exports
+python scripts/create_LB-Explorer_inputs.py \
+    --db_path databases/full_cicy_database.json \
+    --output_dir cy_geometry_exports
 ```
 
 This will populate `cy_geometry_exports/` with `all_geometry_h11_{h11}.json` files which are required by `LB-Explorer.py`.
@@ -132,7 +134,16 @@ This will populate `cy_geometry_exports/` with `all_geometry_h11_{h11}.json` fil
 
 **Example Usage**:
 ```bash
-python LB-Explorer.py --h11 5 --cy_index 7447 --gamma 2 --m_bound 8 --stability_range 2 --use_minibatches --no_bonus --run_id h11_5_g2__cy7447__s42 --output_dir sol_runs_h11_5_g2__cy7447__s42
+python LB-Explorer.py \
+    --h11 5 \
+    --cy_index 7447 \
+    --gamma 2 \
+    --m_bound 8 \
+    --stability_range 2 \
+    --use_minibatches \
+    --no_bonus \
+    --run_id h11_5_g2__cy7447__s42 \
+    --output_dir sol_runs_h11_5_g2__cy7447__s42
 ```
 
 
@@ -143,7 +154,17 @@ python LB-Explorer.py --h11 5 --cy_index 7447 --gamma 2 --m_bound 8 --stability_
 First, generate solutions with `LB-Explorer.py` imposing `--sum_coef 0`. For example:
 
 ```bash
-python LB-Explorer.py --h11 5 --cy_index 7447 --gamma 2 --m_bound 8 --stability_range 2 --use_minibatches --no_bonus --sum_coef 0 --run_id h11_5_g2__cy7447__s42 --output_dir sol_runs_h11_5_g2__cy7447__s42
+python LB-Explorer.py \
+    --h11 5 \
+    --cy_index 7447 \
+    --gamma 2 \
+    --m_bound 8 \
+    --stability_range 2 \
+    --use_minibatches \
+    --no_bonus \
+    --sum_coef 0 \
+    --run_id h11_5_g2__cy7447__s42 \
+    --output_dir sol_runs_h11_5_g2__cy7447__s42
 ```
 
 Then, run `CPSAT-closure.py` on those generated solutions.
@@ -168,9 +189,11 @@ Then, run `CPSAT-closure.py` on those generated solutions.
 
 **Example Usage**:
 ```bash
-python CPSAT-closure.py --solutions sol_runs_h11_5_g2__cy7447__s42/solutions_gpu_h11_5_idx_7447_*.jsonl \
-    --geometry  cy_geometry_exports/all_geometry_h11_5.json \
-    --cy 7447 --gamma 2 \
+python CPSAT-closure.py \
+    --solutions sol_runs_h11_5_g2__cy7447__s42/solutions_gpu_h11_5_idx_7447_*.jsonl \
+    --geometry cy_geometry_exports/all_geometry_h11_5.json \
+    --cy 7447 \
+    --gamma 2 \
     --time_limit 5 \
     --max_matrices 1000 \
     --stability_mode lazy \
@@ -189,7 +212,9 @@ Generates geometry input files from the full CICY database for the RL agent to u
 
 **Example Usage**:
 ```bash
-python scripts/create_LB-Explorer_inputs.py --db_path databases/full_cicy_database.json --output_dir cy_geometry_exports
+python scripts/create_LB-Explorer_inputs.py \
+    --db_path databases/full_cicy_database.json \
+    --output_dir cy_geometry_exports
 ```
 
 ### 2. `scripts/check_validity_solutions.py`
@@ -202,7 +227,10 @@ Standalone Solution Verifier for Line Bundle Solutions. Evaluates candidate inte
 
 **Example Usage**:
 ```bash
-python scripts/check_validity_solutions.py --rank 5 --workers 4 --input_dir Sol_Runs
+python scripts/check_validity_solutions.py \
+    --rank 5 \
+    --workers 4 \
+    --input_dir Sol_Runs
 ```
 
 ### 3. `scripts/check_equivariance.py`
@@ -215,7 +243,9 @@ Check equivariance of line bundle solutions under freely acting symmetries.
 
 **Example Usage**:
 ```bash
-python scripts/check_equivariance.py --cy 7890 --workers 8
+python scripts/check_equivariance.py \
+    --cy 7890 \
+    --workers 8
 ```
 
 ### 4. `scripts/check_polystability.py`
@@ -227,7 +257,8 @@ Check exact polystability of line bundle matrices by verifying existence of Kahl
 
 **Example Usage**:
 ```bash
-python scripts/check_polystability.py --workers 4
+python scripts/check_polystability.py \
+    --workers 4
 ```
 
 ### 5. `scripts/check_lb_spec.py`
@@ -243,7 +274,9 @@ Check exact spectrum and equivariance constraints for line bundle solutions.
 
 **Example Usage**:
 ```bash
-python scripts/check_lb_spec.py --kmax 2 --cy 7890
+python scripts/check_lb_spec.py \
+    --kmax 2 \
+    --cy 7890
 ```
 
 ### 6. `scripts/generate_sym_groups.py`
@@ -253,6 +286,7 @@ Generate topological and configuration symmetry groups for CICYs. NOTE: Running 
 
 **Example Usage**:
 ```bash
-sage -python scripts/generate_sym_groups.py --db_path databases/full_cicy_database.json
+sage -python scripts/generate_sym_groups.py \
+    --db_path databases/full_cicy_database.json
 ```
 
