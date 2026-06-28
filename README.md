@@ -135,6 +135,49 @@ This will populate `cy_geometry_exports/` with `all_geometry_h11_{h11}.json` fil
 python LB-Explorer.py --h11 5 --cy_index 7447 --gamma 2 --m_bound 8 --stability_range 2 --use_minibatches --no_bonus --run_id h11_5_g2__cy7447__s42 --output_dir sol_runs_h11_5_g2__cy7447__s42
 ```
 
+
+## CP-SAT Hybrid Closure
+
+`CPSAT-closure.py` is a script that completes partial integer K-matrices by employing a Constraint Programming SAT solver (CP-SAT). Often, you may want to search for partial matrices by running `LB-Explorer.py` with the chiral index sum penalty disabled (`--sum_coef 0`). Then, you can feed these candidates to `CPSAT-closure.py`, which searches for additional columns that "close" the matrix—satisfying all geometric constraints including anomaly cancellation, exact chiral indices, and Bogomolov stability.
+
+First, generate solutions with `LB-Explorer.py` imposing `--sum_coef 0`. For example:
+
+```bash
+python LB-Explorer.py --h11 5 --cy_index 7447 --gamma 2 --m_bound 8 --stability_range 2 --use_minibatches --no_bonus --sum_coef 0 --run_id h11_5_g2__cy7447__s42 --output_dir sol_runs_h11_5_g2__cy7447__s42
+```
+
+Then, run `CPSAT-closure.py` on those generated solutions.
+
+### Arguments for `CPSAT-closure.py`:
+
+- `-h, --help`: show this help message and exit
+- `--solutions`: Glob pattern for partial solutions files (e.g., `solutions_gpu_*.json` or `.jsonl`). (Required)
+- `--geometry`: Path to the parsed geometry JSON file (e.g., `cy_geometry_exports/all_geometry_h11_5.json`). (Required)
+- `--cy`: Index of the CY manifold in the database. (Required)
+- `--gamma`: Target Gamma value used. (Required)
+- `--time_limit`: Per-K0 CP-SAT solver wall-time cap in seconds. (default: 5)
+- `--total_time_limit`: Whole-run wall-time budget across all files and K0s in seconds.
+- `--max_matrices`: Max number of matrices to process from each input file. (default: 1000)
+- `--stability_mode`: Strategy for Bogomolov stability constraints: `lazy`, `eager`, or `skip`. (default: lazy)
+- `--num_workers`: Number of parallel workers for the CP-SAT solver. (default: 8)
+- `--m_bound`: Max integer charge bound for matrix elements. (default: 8)
+- `--tail_col_bound`: Bound on the last column of K (defaults to `--m_bound`).
+- `--objective_cols`: Number of leading columns to include in the L1 objective.
+- `--apply_column_lex`: Break column-permutation symmetry via lex ordering. (default: False)
+- `--output_dir`: Directory to write the completed `closed_*.json` solutions. (Required)
+
+**Example Usage**:
+```bash
+python CPSAT-closure.py --solutions sol_runs_h11_5_g2__cy7447__s42/solutions_gpu_h11_5_idx_7447_*.jsonl \
+    --geometry  cy_geometry_exports/all_geometry_h11_5.json \
+    --cy 7447 --gamma 2 \
+    --time_limit 5 \
+    --max_matrices 1000 \
+    --stability_mode lazy \
+    --num_workers 8 \
+    --output_dir closed_runs_h11_5_g2__cy7447
+```
+
 ## Post-Processing Scripts
 
 All evaluation and filtering scripts located in `scripts/` are designed to be run standalone and have an explicit CLI interface with sensible defaults.
