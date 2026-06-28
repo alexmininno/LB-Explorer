@@ -180,7 +180,7 @@ Then, run `CPSAT-closure.py` on those generated solutions.
 - `--total_time_limit`: Whole-run wall-time budget across all files and K0s in seconds.
 - `--max_matrices`: Max number of matrices to process from each input file. (default: 1000)
 - `--stability_mode`: Strategy for Bogomolov stability constraints: `lazy`, `eager`, or `skip`. (default: lazy)
-- `--num_workers`: Number of parallel workers for the CP-SAT solver. (default: 8)
+- `--workers`: Number of parallel workers for the CP-SAT solver. (default: 8)
 - `--m_bound`: Max integer charge bound for matrix elements. (default: 8)
 - `--tail_col_bound`: Bound on the last column of K (defaults to `--m_bound`).
 - `--objective_cols`: Number of leading columns to include in the L1 objective.
@@ -197,7 +197,7 @@ python CPSAT-closure.py \
     --time_limit 5 \
     --max_matrices 1000 \
     --stability_mode lazy \
-    --num_workers 8 \
+    --workers 8 \
     --output_dir closed_runs_h11_5_g2__cy7447
 ```
 

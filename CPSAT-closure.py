@@ -9,7 +9,7 @@ Usage:
         --time_limit 5 \\
         --max_matrices 1000 \\
         --stability_mode lazy \\
-        --num_workers 8 \\
+        --workers 8 \\
         --output_dir some_dir
 
 Reads K-matrices from the solutions JSON, calls close_with_cpsat on each,
@@ -764,7 +764,7 @@ def close_with_cpsat(
     perturbation_budget=None,
     stability_mode="lazy",
     time_limit_s=5,
-    num_workers=8,
+    workers=8,
     verbose=False,
     hint_K0=True,
     stability_range=2,
@@ -845,7 +845,7 @@ def close_with_cpsat(
 
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = float(time_limit_s)
-        solver.parameters.num_search_workers = int(num_workers)
+        solver.parameters.num_search_workers = int(workers)
         if verbose:
             solver.parameters.log_search_progress = True
         collector = _IncumbentCollector(K_vars, h11, rank)
@@ -918,7 +918,7 @@ def close_with_cpsat(
             break
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = float(min(remaining, lazy_per_iter_s))
-        solver.parameters.num_search_workers = int(num_workers)
+        solver.parameters.num_search_workers = int(workers)
         if verbose:
             solver.parameters.log_search_progress = True
         status = solver.Solve(model, collector)
@@ -1113,7 +1113,7 @@ def load_solutions(path):
 
 def process_file(solutions_path, kappa, c2_tx, gamma,
                  time_limit=60, max_matrices=None,
-                 stability_mode='eager', num_workers=8, m_bound=8,
+                 stability_mode='eager', workers=8, m_bound=8,
                  apply_column_lex=False, deadline=None,
                  tail_col_bound=None, objective_cols=None):
     """Load solutions JSON/JSONL, run close_with_cpsat on each unique K, return
@@ -1160,7 +1160,7 @@ def process_file(solutions_path, kappa, c2_tx, gamma,
             res = close_with_cpsat(
                 K0, kappa=kappa, c2_tx=c2_tx, gamma=gamma,
                 stability_mode=stability_mode, m_bound=m_bound,
-                time_limit_s=eff_time_limit, num_workers=num_workers,
+                time_limit_s=eff_time_limit, workers=workers,
                 apply_column_lex=apply_column_lex,
                 tail_col_bound=tail_col_bound,
                 objective_cols=objective_cols,
@@ -1231,7 +1231,7 @@ def main():
     ap.add_argument('--max_matrices', type=int, default=1000)
     ap.add_argument('--stability_mode', default='lazy',
                     choices=['lazy', 'eager', 'skip'])
-    ap.add_argument('--num_workers', type=int, default=8)
+    ap.add_argument('--workers', type=int, default=8)
     ap.add_argument('--m_bound', type=int, default=8,
                     help='domain cap on each K[i,a] (default 8). '
                          'When --tail_col_bound is set, this applies only to '
@@ -1286,7 +1286,7 @@ def main():
             results, hit_deadline = process_file(
                 solutions_path, kappa, c2_tx, args.gamma,
                 time_limit=args.time_limit, max_matrices=args.max_matrices,
-                stability_mode=args.stability_mode, num_workers=args.num_workers,
+                stability_mode=args.stability_mode, workers=args.workers,
                 m_bound=args.m_bound, apply_column_lex=args.apply_column_lex,
                 deadline=deadline,
                 tail_col_bound=args.tail_col_bound,
