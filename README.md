@@ -174,7 +174,7 @@ Then, run `CPSAT-closure.py` on those generated solutions.
 - `-h, --help`: show this help message and exit
 - `--solutions`: Glob pattern for partial solutions files (e.g., `solutions_gpu_*.json` or `.jsonl`). (Required)
 - `--geometry`: Path to the parsed geometry JSON file (e.g., `cy_geometry_exports/all_geometry_h11_5.json`). (Required)
-- `--cy`: Index of the CY manifold in the database. (Required)
+- `--cy_index`: Index of the CY manifold in the database. (Required)
 - `--gamma`: Target Gamma value used. (Required)
 - `--time_limit`: Per-K0 CP-SAT solver wall-time cap in seconds. (default: 5)
 - `--total_time_limit`: Whole-run wall-time budget across all files and K0s in seconds.
@@ -192,7 +192,7 @@ Then, run `CPSAT-closure.py` on those generated solutions.
 python CPSAT-closure.py \
     --solutions sol_runs_h11_5_g2__cy7447__s42/solutions_gpu_h11_5_idx_7447_*.jsonl \
     --geometry cy_geometry_exports/all_geometry_h11_5.json \
-    --cy 7447 \
+    --cy_index 7447 \
     --gamma 2 \
     --time_limit 5 \
     --max_matrices 1000 \
@@ -236,7 +236,7 @@ python scripts/check_validity_solutions.py \
 ### 3. `scripts/check_equivariance.py`
 Check equivariance of line bundle solutions under freely acting symmetries.
 - `--workers`: Number of worker processes to use (default: 8)
-- `--cy`: List of CY IDs to process (default: all found in input_dir)
+- `--cy_index`: List of CY IDs to process (default: all found in input_dir)
 - `--db_path`: Path to the CICY database JSON file (default: `databases/full_cicy_database.json`)
 - `--input_dir`: Directory containing raw_cy_*.jsonl files (default: `Sol_Runs`)
 - `--output_csv`: Output path for CSV stats (default: `Analysis_Plots/equivariance_stats.csv`)
@@ -244,7 +244,7 @@ Check equivariance of line bundle solutions under freely acting symmetries.
 **Example Usage**:
 ```bash
 python scripts/check_equivariance.py \
-    --cy 7890 \
+    --cy_index 7890 \
     --workers 8
 ```
 
@@ -263,9 +263,9 @@ python scripts/check_polystability.py \
 
 ### 5. `scripts/check_lb_spec.py`
 Check exact spectrum and equivariance constraints for line bundle solutions.
-- `--kmax`: Max charge bound for matrix elements (default: 2)
+- `--m_bound`: Max charge bound for matrix elements (default: 2)
 - `--workers`: Number of parallel workers (default: 8)
-- `--cy`: List of CY IDs to process (default: all)
+- `--cy_index`: List of CY IDs to process (default: all)
 - `--gamma`: Optional: process only this gamma value
 - `--only_trivial`: Only process manifolds with trivial equivariance (default: False)
 - `--db_path`: Path to CICY database JSON file (default: `databases/full_cicy_database.json`)
@@ -275,8 +275,8 @@ Check exact spectrum and equivariance constraints for line bundle solutions.
 **Example Usage**:
 ```bash
 python scripts/check_lb_spec.py \
-    --kmax 2 \
-    --cy 7890
+    --m_bound 2 \
+    --cy_index 7890
 ```
 
 ### 6. `scripts/generate_sym_groups.py`

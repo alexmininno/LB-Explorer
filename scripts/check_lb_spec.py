@@ -114,7 +114,7 @@ def canonicalise(V, gSym):
 # --- Worker Functions ---
 def scan_and_canonicalise_worker(args):
     """Worker to read a chunk of the JSONL file, canonicalise, and return hashes."""
-    file_path, start_line, end_line, gSym, kmax = args
+    file_path, start_line, end_line, gSym, m_bound = args
     
     events = [] # (h_c, h_g, h_f, in_range)
     representative_matrices = {} # h_c -> matrix (only if in_range)
@@ -135,7 +135,7 @@ def scan_and_canonicalise_worker(args):
                 h_c, h_g, h_f = stable_hash(ck), stable_hash(gk), stable_hash(fk)
                 
                 # Check kmax
-                in_range = all(all(abs(k) <= kmax for k in row) for row in m_list)
+                in_range = all(all(abs(k) <= m_bound for k in row) for row in m_list)
                 
                 events.append((h_c, h_g, h_f, in_range))
                 if in_range and h_c not in representative_matrices:
@@ -337,8 +337,8 @@ def check_spectrum(item):
     return (passed_equiv, passed_spectrum)
 
 
-def process_manifold(cy, h11, g, kmax, db, n_workers, raw_path=None, out_csv_dir=None, only_trivial=False):
-    print(f"\nProcessing CY #{cy}, h11={h11}, g={g} (kmax={kmax})...")
+def process_manifold(cy, h11, g, m_bound, db, n_workers, raw_path=None, out_csv_dir=None, only_trivial=False):
+    print(f"\nProcessing CY #{cy}, h11={h11}, g={g} (m_bound={m_bound})...")
 
     if raw_path is None:
         raw_path = f"Sol_Runs/raw_cy_{cy}_h11_{h11}_g_{g}.jsonl"
@@ -363,7 +363,7 @@ def process_manifold(cy, h11, g, kmax, db, n_workers, raw_path=None, out_csv_dir
     batch_size = max(1, line_count // n_workers)
     scan_args = []
     for i in range(0, line_count, batch_size):
-        scan_args.append((raw_path, i, min(i + batch_size, line_count), gSym, kmax))
+        scan_args.append((raw_path, i, min(i + batch_size, line_count), gSym, m_bound))
         
     all_events = [] # (h_c, h_g, h_f, in_range)
     global_representative_matrices = {} # h_c -> matrix
@@ -388,7 +388,7 @@ def process_manifold(cy, h11, g, kmax, db, n_workers, raw_path=None, out_csv_dir
     n_total_in_range = len(events_r)
     
     if n_total_in_range == 0:
-        print(f"  No matrices satisfy kmax={kmax}.")
+        print(f"  No matrices satisfy m_bound={m_bound}.")
         return {
             "cy": cy, "h11": h11, "g": g,
             "n_total": n_total, "n_unique_col": n_unique_col, "n_unique_geom": n_unique_geom, "n_unique_full": n_unique_full,
@@ -513,9 +513,9 @@ def process_manifold(cy, h11, g, kmax, db, n_workers, raw_path=None, out_csv_dir
 
 def main():
     parser = argparse.ArgumentParser(description="Check exact spectrum and equivariance constraints for line bundle solutions.")
-    parser.add_argument("--kmax", type=int, default=2, help="Max charge bound for matrix elements (default: 2)")
+    parser.add_argument("--m_bound", type=int, default=2, help="Max charge bound for matrix elements (default: 2)")
     parser.add_argument("--workers", type=int, default=cpu_count(), help=f"Number of parallel workers (default: {cpu_count()})")
-    parser.add_argument("--cy", type=int, nargs="+", help="List of CY IDs to process (default: all)")
+    parser.add_argument("--cy_index", type=int, nargs="+", help="List of CY IDs to process (default: all)")
     parser.add_argument("--gamma", type=int, help="Optional: process only this gamma value")
     parser.add_argument("--only_trivial", action="store_true", help="Only process manifolds with trivial equivariance (default: False)")
     parser.add_argument("--db_path", type=str, default="databases/full_cicy_database.json", help="Path to CICY database JSON file (default: databases/full_cicy_database.json)")
@@ -529,8 +529,8 @@ def main():
     in_dir = args.input_dir
     out_csv_dir = args.output_dir
 
-    if args.cy:
-        for cy_id in args.cy:
+    if args.cy_index:
+        for cy_id in args.cy_index:
             # Find manifold info from DB
             entry = next((e for e in db if e.get("Num", e.get("id")) == cy_id), None)
             if entry:
@@ -547,7 +547,7 @@ def main():
                     f = os.path.join(in_dir, f"raw_cy_{cy_id}_h11_{h11}_g_{g}.jsonl")
                     if os.path.exists(f):
                         print(f"  Processing {f}...")
-                        process_manifold(cy_id, h11, g, args.kmax, db, args.workers, raw_path=f, out_csv_dir=out_csv_dir, only_trivial=args.only_trivial)
+                        process_manifold(cy_id, h11, g, args.m_bound, db, args.workers, raw_path=f, out_csv_dir=out_csv_dir, only_trivial=args.only_trivial)
                     else:
                         pass
             else:
@@ -557,8 +557,8 @@ def main():
         gamma_suffix = f"g_{args.gamma}" if args.gamma else "g_*"
         
         raw_files = glob.glob(os.path.join(in_dir, "**", f"raw_cy_*_h11_*_{gamma_suffix}.jsonl"), recursive=True)
-        if args.cy:
-            cy_set = set(args.cy)
+        if args.cy_index:
+            cy_set = set(args.cy_index)
             raw_files = [f for f in raw_files if int(re.search(r"cy_(\d+)", f).group(1)) in cy_set]
             
         for f in raw_files:
@@ -568,7 +568,7 @@ def main():
                     int(m.group(1)),
                     int(m.group(2)),
                     int(m.group(3)),
-                    args.kmax,
+                    args.m_bound,
                     db,
                     args.workers,
                     raw_path=f,

@@ -5,7 +5,7 @@ Usage:
     python CPSAT-closure.py \\
         --solutions solutions_gpu_h11_5_idx_7447_..._sumoff.jsonl \\
         --geometry cy_geometry_exports/all_geometry_h11_5.json \\
-        --cy 7447 --gamma 2 \\
+        --cy_index 7447 --gamma 2 \\
         --time_limit 5 \\
         --max_matrices 1000 \\
         --stability_mode lazy \\
@@ -1218,7 +1218,7 @@ def main():
                     help='glob pattern for solutions_gpu_*.json')
     ap.add_argument('--geometry', required=True,
                     help='path to all_geometry_h11_<N>.json')
-    ap.add_argument('--cy', type=int, required=True)
+    ap.add_argument('--cy_index', type=int, required=True)
     ap.add_argument('--gamma', type=int, required=True)
     ap.add_argument('--time_limit', type=int, default=5,
                     help='per-K0 CP-SAT solver wall-time cap, seconds')
@@ -1263,8 +1263,8 @@ def main():
         sys.exit(1)
     print(f'Found {len(paths)} solutions file(s).')
 
-    kappa, c2_tx, h11 = load_geometry(args.geometry, args.cy)
-    print(f'Geometry: CY={args.cy} h11={h11} gamma={args.gamma} '
+    kappa, c2_tx, h11 = load_geometry(args.geometry, args.cy_index)
+    print(f'Geometry: CY={args.cy_index} h11={h11} gamma={args.gamma} '
           f'c2_tx={c2_tx.tolist()}')
 
     run_start = time.time()
@@ -1303,7 +1303,7 @@ def main():
         out_path = os.path.join(out_dir, f'closed_{stem}.json')
         payload = {
             'source': solutions_path,
-            'cy': args.cy, 'gamma': args.gamma, 'h11': h11,
+            'cy_index': args.cy_index, 'gamma': args.gamma, 'h11': h11,
             'time_limit_s': args.time_limit,
             'total_time_limit_s': args.total_time_limit,
             'stopped_by_deadline': hit_deadline,

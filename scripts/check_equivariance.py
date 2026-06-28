@@ -492,7 +492,7 @@ def main():
         help=f"Number of worker processes to use (default: {cpu_count()})",
     )
     parser.add_argument(
-        "--cy",
+        "--cy_index",
         type=int,
         nargs="+",
         help="List of CY IDs to process (default: all found in input_dir)",
@@ -531,8 +531,8 @@ def main():
     results = []
 
     # Filter by CY if requested
-    if args.cy:
-        cy_set = set(args.cy)
+    if args.cy_index:
+        cy_set = set(args.cy_index)
         raw_files = [
             f for f in raw_files if int(re.search(r"cy_(\d+)", f).group(1)) in cy_set
         ]
