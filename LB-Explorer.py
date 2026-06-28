@@ -8,7 +8,6 @@
 #   is evaluated against 7 physics constraints (anomaly cancellation, Bogomolov
 #   stability, chiral index sum/range/pairwise, non-triviality, optional bounds).
 #   Valid solutions (all active constraints satisfied) are saved to JSONL files.
-#   Supports Phase 0 auto-stop (--phase0_trigger) for branching workflows.
 #
 # Usage:
 #   python LB-Explorer.py --h11 6 --cy_index 0 --episodes 10000000 --batch_size 8192
@@ -17,7 +16,6 @@
 #   solutions_h11_<h11>_idx_<cy_index>[_<run_id>].jsonl          — valid K-matrices (bare, one per line)
 #   solutions_meta_h11_<h11>_idx_<cy_index>[_<run_id>].jsonl     — metadata per solution (parallel)
 #   checkpoint_h11_<h11>_idx_<cy_index>[_<run_id>].pth           — resumable state
-#   phase0_checkpoint_<...>.pth                                   — Phase 0 branching checkpoint (if --phase0_trigger)
 #   plot_h11_<h11>_idx_<cy_index>[_<run_id>].png                 — training curves
 # =============================================================================
 
@@ -35,11 +33,12 @@ import random
 import gc
 from collections import defaultdict
 
-torch.set_float32_matmul_precision('high')  # enable TF32 tensor cores on A100/H100
+torch.set_float32_matmul_precision("high")  # enable TF32 tensor cores on A100/H100
 
 # ====================================================================
 # I. REPRODUCIBILITY & UTILS
 # ====================================================================
+
 
 def set_seed(seed):
     """Sets random seeds for reproducibility."""
@@ -52,6 +51,7 @@ def set_seed(seed):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = True
 
+
 # Loads the list of CY manifold records for a given h11 value.
 # dir_path defaults to "cy_geometry_exports/" — a subfolder expected to be
 # co-located with this script. Files are named all_geometry_h11_<h11>.json
@@ -59,10 +59,14 @@ def set_seed(seed):
 def load_geometry_data(h11, dir_path="cy_geometry_exports"):
     filename = os.path.join(dir_path, f"all_geometry_h11_{h11}.json")
     try:
-        with open(filename, 'r') as f: return json.load(f)
+        with open(filename, "r") as f:
+            return json.load(f)
     except FileNotFoundError:
-        print(f"ERROR: Geometry file not found at {filename}. Please generate data first using scripts/create_LB-Explorer_inputs.py.")
+        print(
+            f"ERROR: Geometry file not found at {filename}. Please generate data first using scripts/create_LB-Explorer_inputs.py."
+        )
         return []
+
 
 # Converts a single manifold JSON record into numpy arrays ready for GPU upload.
 # kappa[i,j,k] = triple intersection number κ_{ijk} — a rank-3 symmetric tensor.
@@ -70,25 +74,40 @@ def load_geometry_data(h11, dir_path="cy_geometry_exports"):
 # c2_tx[i] = i-th component of c2(TX), the second Chern class of the tangent bundle.
 #   Used in the anomaly cancellation and holomorphic index formulas.
 def prepare_geometry_objects(geo_data):
-    h11 = geo_data['h11']
+    h11 = geo_data["h11"]
     kappa = np.zeros((h11, h11, h11), dtype=np.float32)
-    for entry in geo_data['intersection_numbers']:
+    for entry in geo_data["intersection_numbers"]:
         if len(entry) == 4:
             i, j, k, val = entry
-            kappa[i-1, j-1, k-1] = val 
-    c2_tx = np.array(geo_data['c2_tx'], dtype=np.float32)
+            kappa[i - 1, j - 1, k - 1] = val
+    c2_tx = np.array(geo_data["c2_tx"], dtype=np.float32)
     return kappa, c2_tx
+
 
 # ====================================================================
 # II. PURE GPU PHYSICS ENGINE (SIMT Paradigm)
 # ====================================================================
+
 
 class GPUValidator(nn.Module):
     """
     Evaluates topological constraints using pure tensor algebra.
     Designed for torch.compile() fusion to maximize Tensor Core usage.
     """
-    def __init__(self, kappa_array, c2_tx_array, rank, target_gamma, m_bound, weights, coefs, device, stability_range=2, ignore_bounds=True):
+
+    def __init__(
+        self,
+        kappa_array,
+        c2_tx_array,
+        rank,
+        target_gamma,
+        m_bound,
+        weights,
+        coefs,
+        device,
+        stability_range=2,
+        ignore_bounds=True,
+    ):
         super().__init__()
         self.device = device
         self.rank = rank
@@ -104,18 +123,22 @@ class GPUValidator(nn.Module):
         # line below), and the guards below drop it from the is_perfect save
         # gate too. torch.compile constant-folds the if-branches in forward()
         # against these bools at trace time, so there's no runtime overhead.
-        self._active_anom = bool(self.coefs['anom'] > 0)
-        self._active_stab = bool(self.coefs['stab'] > 0)
-        self._active_sum  = bool(self.coefs['sum']  > 0)
-        self._active_rng  = bool(self.coefs['rng']  > 0)
-        self._active_pair = bool(self.coefs['pair'] > 0)
-        self._active_bnd  = bool(self.coefs['bnd']  > 0) and (not ignore_bounds)
+        self._active_anom = bool(self.coefs["anom"] > 0)
+        self._active_stab = bool(self.coefs["stab"] > 0)
+        self._active_sum = bool(self.coefs["sum"] > 0)
+        self._active_rng = bool(self.coefs["rng"] > 0)
+        self._active_pair = bool(self.coefs["pair"] > 0)
+        self._active_bnd = bool(self.coefs["bnd"] > 0) and (not ignore_bounds)
 
         # 1. Topology Tensors (Immutable Buffers)
-        self.register_buffer('kappa', torch.tensor(kappa_array, dtype=torch.float32, device=device))
-        self.register_buffer('c2_tx', torch.tensor(c2_tx_array, dtype=torch.float32, device=device))
+        self.register_buffer(
+            "kappa", torch.tensor(kappa_array, dtype=torch.float32, device=device)
+        )
+        self.register_buffer(
+            "c2_tx", torch.tensor(c2_tx_array, dtype=torch.float32, device=device)
+        )
         self.h11 = self.kappa.shape[0]
-        
+
         # 2. Stability Test Vectors
         # Bogomolov stability requires that for every non-zero, non-uniform integer
         # vector v ∈ Z^rank, the matrix κ_{ijk} v^i (viewed as a bilinear form in j,k)
@@ -131,11 +154,13 @@ class GPUValidator(nn.Module):
         norms = v_tensor.abs().sum(dim=1)
         is_uniform = (v_tensor == v_tensor[:, [0]]).all(dim=1)
         valid_mask = (norms > 0) & (~is_uniform)
-        self.register_buffer('test_vectors', v_tensor[valid_mask]) # Shape: (N, rank)
-        
+        self.register_buffer("test_vectors", v_tensor[valid_mask])  # Shape: (N, rank)
+
         self.base_max = 1.0
-        self.bonus_max = 5.0 if not hasattr(self, 'use_bonus') or getattr(self, 'use_bonus') else 0.0
-        
+        self.bonus_max = (
+            5.0 if not hasattr(self, "use_bonus") or getattr(self, "use_bonus") else 0.0
+        )
+
     def _compute_indices(self, matrix):
         """Helper to compute cubic and linear indices via einsum."""
         # Computes the holomorphic Euler characteristic (chiral index) for each
@@ -145,8 +170,10 @@ class GPUValidator(nn.Module):
         # c2 correction. The /6 and /12 factors come from the RR formula on a
         # Calabi-Yau threefold.
         # matrix shape: (B, h11, num_cols)
-        cubic = torch.einsum('ijk, bia, bja, bka -> ba', self.kappa, matrix, matrix, matrix)
-        linear = torch.einsum('i, bia -> ba', self.c2_tx, matrix)
+        cubic = torch.einsum(
+            "ijk, bia, bja, bka -> ba", self.kappa, matrix, matrix, matrix
+        )
+        linear = torch.einsum("i, bia -> ba", self.c2_tx, matrix)
         return (cubic / 6.0) + (linear / 12.0)
 
     def forward(self, K):
@@ -162,28 +189,28 @@ class GPUValidator(nn.Module):
         # Both cases give zero reward rather than a partial penalty, since they are
         # not valid search targets. We use brute-force masking (no early exit) to
         # keep the computation fully vectorized across the batch.
-        col_mags = K.abs().sum(dim=1) # (B, rank)
+        col_mags = K.abs().sum(dim=1)  # (B, rank)
         has_zero_cols = (col_mags == 0).any(dim=1)
-        
-        pair_sums = K.unsqueeze(3) + K.unsqueeze(2) # (B, h11, rank, rank)
-        pair_mags = pair_sums.abs().sum(dim=1) # (B, rank, rank)
+
+        pair_sums = K.unsqueeze(3) + K.unsqueeze(2)  # (B, h11, rank, rank)
+        pair_mags = pair_sums.abs().sum(dim=1)  # (B, rank, rank)
         eye = torch.eye(self.rank, device=self.device).bool()
-        pair_mags = pair_mags.masked_fill(eye, 1e9) 
+        pair_mags = pair_mags.masked_fill(eye, 1e9)
         has_opposing_cols = (pair_mags == 0).any(dim=2).any(dim=1)
-        
+
         is_trivial = has_zero_cols | has_opposing_cols
-        ntr_bin = (~is_trivial).float() 
+        ntr_bin = (~is_trivial).float()
 
         # --- 2. ANOMALY CANCELLATION ---
         # Physics requirement: c2(V) ≤ c2(TX) component-wise (tadpole cancellation).
         # c2(V)_i = (1/2) κ_{ijk} Σ_a K^j_a K^k_a  — second Chern class of the bundle.
         # Violation is the positive part of (c2(V) - c2(TX)); we sum over divisors.
         # cont score uses a log-barrier that approaches 1 as error → 0 and 0 as error → ∞.
-        dot_jk = torch.einsum('bja, bka -> bjk', K, K)
-        c2_V = 0.5 * torch.einsum('ijk, bjk -> bi', self.kappa, dot_jk)
+        dot_jk = torch.einsum("bja, bka -> bjk", K, K)
+        c2_V = 0.5 * torch.einsum("ijk, bjk -> bi", self.kappa, dot_jk)
         anom_violation = torch.clamp(c2_V - self.c2_tx.unsqueeze(0), min=0)
         total_anom_error = anom_violation.mean(dim=1)
-        anom_cont = 1.0 / (1.0 + self.weights['anom'] * torch.log1p(total_anom_error))
+        anom_cont = 1.0 / (1.0 + self.weights["anom"] * torch.log1p(total_anom_error))
         anom_bin = (total_anom_error < 1e-5).float()
 
         # --- 3. BOGOMOLOV STABILITY (Full Check on GPU) ---
@@ -193,22 +220,22 @@ class GPUValidator(nn.Module):
         # We proxy eigenvalue sign via amax/amin of the full matrix entries (sufficient
         # for a quick GPU check). If any v makes P semi-definite, the bundle is unstable.
         # M shape: (B, rank, h11, h11)
-        M = torch.einsum('ijk, bia -> bajk', self.kappa, K)
+        M = torch.einsum("ijk, bia -> bajk", self.kappa, K)
         # Projections shape: (B, N, h11, h11)
-        P = torch.einsum('na, bajk -> bnjk', self.test_vectors, M)
-        max_vals = P.amax(dim=(2, 3)) # (B, N)
-        min_vals = P.amin(dim=(2, 3)) # (B, N)
-        
+        P = torch.einsum("na, bajk -> bnjk", self.test_vectors, M)
+        max_vals = P.amax(dim=(2, 3))  # (B, N)
+        min_vals = P.amin(dim=(2, 3))  # (B, N)
+
         err_no_pos = torch.clamp(1.0 - max_vals, min=0)
         err_no_neg = torch.clamp(min_vals + 1.0, min=0)
         total_stab_error = (err_no_pos + err_no_neg).mean(dim=1)
-        stab_cont = 1.0 / (1.0 + self.weights['stab'] * torch.log1p(total_stab_error))
+        stab_cont = 1.0 / (1.0 + self.weights["stab"] * torch.log1p(total_stab_error))
         unstable_mask = (max_vals <= 1e-5) | (min_vals >= -1e-5)
         stab_bin = (~unstable_mask.any(dim=1)).float()
 
         # --- 4. CHIRAL INDICES ---
         # χ(L_a) is the chiral index of the a-th line bundle factor (computed above).
-        indices = self._compute_indices(K) # (B, rank)
+        indices = self._compute_indices(K)  # (B, rank)
 
         # Index Sum
         # The net number of chiral generations is Σ_a χ(L_a). String theory requires
@@ -218,17 +245,19 @@ class GPUValidator(nn.Module):
         target = -3.0 * self.target_gamma
         sum_err = torch.abs(total_index - target)
         sum_bin = (sum_err < 1e-5).float()
-        sum_cont = 1.0 / (1.0 + self.weights['sum'] * torch.log1p(sum_err))
-        
+        sum_cont = 1.0 / (1.0 + self.weights["sum"] * torch.log1p(sum_err))
+
         # Index Range
         # Each individual χ(L_a) must lie in [target, 0]. Values outside this window
         # would require unphysical matter content in the low-energy spectrum.
         lower_bound = target
-        rng_err = torch.clamp(lower_bound - indices, min=0) + torch.clamp(indices - 0.0, min=0)
+        rng_err = torch.clamp(lower_bound - indices, min=0) + torch.clamp(
+            indices - 0.0, min=0
+        )
         total_rng_err = rng_err.mean(dim=1)
         rng_bin = (total_rng_err < 1e-5).float()
-        rng_cont = 1.0 / (1.0 + self.weights['rng'] * torch.log1p(total_rng_err))
-        
+        rng_cont = 1.0 / (1.0 + self.weights["rng"] * torch.log1p(total_rng_err))
+
         # Pairwise Indices
         # χ(L_a ⊗ L_b) for each pair (a,b) must also satisfy the range constraint.
         # This constrains off-diagonal matter (bifundamental representations) in the
@@ -238,12 +267,14 @@ class GPUValidator(nn.Module):
             for j in range(i + 1, self.rank):
                 pair_list.append(K[:, :, i] + K[:, :, j])
         if pair_list:
-            K_pairs = torch.stack(pair_list, dim=-1) # (B, h11, num_pairs)
-            pair_indices = self._compute_indices(K_pairs) # (B, num_pairs)
-            pair_err = torch.clamp(lower_bound - pair_indices, min=0) + torch.clamp(pair_indices - 0.0, min=0)
+            K_pairs = torch.stack(pair_list, dim=-1)  # (B, h11, num_pairs)
+            pair_indices = self._compute_indices(K_pairs)  # (B, num_pairs)
+            pair_err = torch.clamp(lower_bound - pair_indices, min=0) + torch.clamp(
+                pair_indices - 0.0, min=0
+            )
             total_pair_err = pair_err.mean(dim=1)
             pair_bin = (total_pair_err < 1e-5).float()
-            pair_cont = 1.0 / (1.0 + self.weights['pair'] * torch.log1p(total_pair_err))
+            pair_cont = 1.0 / (1.0 + self.weights["pair"] * torch.log1p(total_pair_err))
         else:
             pair_bin = torch.ones_like(sum_bin)
             pair_cont = torch.ones_like(sum_cont)
@@ -255,7 +286,11 @@ class GPUValidator(nn.Module):
         else:
             abs_k = K.abs()
             bnd_bin = (abs_k <= self.m_bound).all(dim=2).all(dim=1).float()
-            bnd_cont = 1.0 / (1.0 + self.weights['bnd'] * torch.log1p(torch.clamp(abs_k - self.m_bound, min=0).mean(dim=(1,2))))
+            bnd_cont = 1.0 / (
+                1.0
+                + self.weights["bnd"]
+                * torch.log1p(torch.clamp(abs_k - self.m_bound, min=0).mean(dim=(1, 2)))
+            )
 
         # --- 6. REWARD AGGREGATION & TRIVIALITY MASKING ---
         # Two score types are tracked for each constraint:
@@ -267,17 +302,24 @@ class GPUValidator(nn.Module):
         # bonus_max (+5.0) is added when ALL hard constraints are simultaneously met,
         # creating a sharp reward spike that reinforces truly valid solutions.
         # Final score is zeroed for trivial bundles (ntr_bin=0) regardless of physics.
-        coef_vals = [self.coefs['anom'], self.coefs['stab'], self.coefs['sum'],
-                     self.coefs['rng'], self.coefs['pair']]
+        coef_vals = [
+            self.coefs["anom"],
+            self.coefs["stab"],
+            self.coefs["sum"],
+            self.coefs["rng"],
+            self.coefs["pair"],
+        ]
         if not self.ignore_bounds:
-            coef_vals.append(self.coefs['bnd'])
+            coef_vals.append(self.coefs["bnd"])
         coef_t = torch.tensor(coef_vals, dtype=torch.float32, device=self.device)
-        cont_scores = torch.stack([anom_cont, stab_cont, sum_cont, rng_cont, pair_cont], dim=1)
+        cont_scores = torch.stack(
+            [anom_cont, stab_cont, sum_cont, rng_cont, pair_cont], dim=1
+        )
         if not self.ignore_bounds:
             cont_scores = torch.cat([cont_scores, bnd_cont.unsqueeze(1)], dim=1)
 
         base_score = (cont_scores * coef_t).sum(dim=1) / coef_t.sum()
-        
+
         # is_perfect = AND over *active* (nonzero-coef) constraints only.
         # When a --*_coef is 0 we've declared that constraint doesn't matter
         # for this run, so it must drop from the save gate too — otherwise
@@ -285,34 +327,48 @@ class GPUValidator(nn.Module):
         # without that constraint in the reward. Ntr remains a hard gate
         # outside this AND (applied in the details dict below).
         is_perfect = torch.ones_like(anom_bin, dtype=torch.bool)
-        if self._active_anom: is_perfect = is_perfect & (anom_bin == 1.0)
-        if self._active_stab: is_perfect = is_perfect & (stab_bin == 1.0)
-        if self._active_sum:  is_perfect = is_perfect & (sum_bin  == 1.0)
-        if self._active_rng:  is_perfect = is_perfect & (rng_bin  == 1.0)
-        if self._active_pair: is_perfect = is_perfect & (pair_bin == 1.0)
-        if self._active_bnd:  is_perfect = is_perfect & (bnd_bin  == 1.0)
-            
+        if self._active_anom:
+            is_perfect = is_perfect & (anom_bin == 1.0)
+        if self._active_stab:
+            is_perfect = is_perfect & (stab_bin == 1.0)
+        if self._active_sum:
+            is_perfect = is_perfect & (sum_bin == 1.0)
+        if self._active_rng:
+            is_perfect = is_perfect & (rng_bin == 1.0)
+        if self._active_pair:
+            is_perfect = is_perfect & (pair_bin == 1.0)
+        if self._active_bnd:
+            is_perfect = is_perfect & (bnd_bin == 1.0)
+
         final_score = base_score + (is_perfect.float() * self.bonus_max)
-        
+
         # 0.0 reward for physically degenerate states
         final_score = final_score * ntr_bin
 
         details = {
-            'anom_bin': anom_bin, 'anom_cont': anom_cont,
-            'stab_bin': stab_bin, 'stab_cont': stab_cont,
-            'sum_bin': sum_bin, 'sum_cont': sum_cont,
-            'rng_bin': rng_bin, 'rng_cont': rng_cont,
-            'pair_bin': pair_bin, 'pair_cont': pair_cont,
-            'bnd_bin': bnd_bin, 'bnd_cont': bnd_cont,
-            'ntr_bin': ntr_bin, 
-            'is_valid_solution': (is_perfect & (ntr_bin == 1.0))
+            "anom_bin": anom_bin,
+            "anom_cont": anom_cont,
+            "stab_bin": stab_bin,
+            "stab_cont": stab_cont,
+            "sum_bin": sum_bin,
+            "sum_cont": sum_cont,
+            "rng_bin": rng_bin,
+            "rng_cont": rng_cont,
+            "pair_bin": pair_bin,
+            "pair_cont": pair_cont,
+            "bnd_bin": bnd_bin,
+            "bnd_cont": bnd_cont,
+            "ntr_bin": ntr_bin,
+            "is_valid_solution": (is_perfect & (ntr_bin == 1.0)),
         }
-        
+
         return final_score, details
+
 
 # ====================================================================
 # III. GPU NOVELTY BUFFER
 # ====================================================================
+
 
 def canonicalize_columns(K):
     """Lex-sort the rank columns of each K matrix in the batch.
@@ -327,17 +383,17 @@ def canonicalize_columns(K):
     collisions as long as `base` > 2*m_bound+1 (and base**(h11-1) fits float64).
     """
     B, h11, rank = K.shape
-    base = 64        # > 2*m_bound+1 (typical m_bound=8 → range = 17 < 64)
+    base = 64  # > 2*m_bound+1 (typical m_bound=8 → range = 17 < 64)
     offset = base // 2
-    powers = (base ** torch.arange(h11 - 1, -1, -1, dtype=torch.float64,
-                                   device=K.device))
+    powers = base ** torch.arange(h11 - 1, -1, -1, dtype=torch.float64, device=K.device)
     keys = ((K + offset).double() * powers.view(1, h11, 1)).sum(dim=1)  # (B, rank)
-    sort_idx = keys.argsort(dim=1)                                       # (B, rank)
+    sort_idx = keys.argsort(dim=1)  # (B, rank)
     return torch.gather(K, 2, sort_idx.unsqueeze(1).expand(-1, h11, -1))
 
 
 class GPUNoveltyBuffer:
     """A purely silicon rolling buffer to penalize repeated discoveries."""
+
     # FIFO ring buffer that stores the last `buffer_size` generated K-matrices
     # (as flat integer token sequences). When a new batch is checked, any matrix
     # that already appears in the history gets its reward multiplied by
@@ -347,40 +403,50 @@ class GPUNoveltyBuffer:
     def __init__(self, buffer_size, flat_matrix_size, device):
         self.buffer_size = buffer_size
         self.device = device
-        self.buffer = torch.full((buffer_size, flat_matrix_size), -999, dtype=torch.long, device=device)
+        self.buffer = torch.full(
+            (buffer_size, flat_matrix_size), -999, dtype=torch.long, device=device
+        )
         self.pointer = 0
         self.current_size = 0
 
     def calculate_penalty_mask(self, batch_states):
         """Returns boolean tensor of shape (B,) true if duplicate found."""
         if self.current_size == 0:
-            return torch.zeros(batch_states.shape[0], dtype=torch.bool, device=self.device)
-            
-        valid_history = self.buffer[:self.current_size] # (H, D)
-        matches = (batch_states.unsqueeze(1) == valid_history.unsqueeze(0)).all(dim=-1).any(dim=1)
+            return torch.zeros(
+                batch_states.shape[0], dtype=torch.bool, device=self.device
+            )
+
+        valid_history = self.buffer[: self.current_size]  # (H, D)
+        matches = (
+            (batch_states.unsqueeze(1) == valid_history.unsqueeze(0))
+            .all(dim=-1)
+            .any(dim=1)
+        )
         return matches
 
     def update_buffer(self, batch_states):
         B = batch_states.shape[0]
         states_to_store = batch_states.detach()
         if B >= self.buffer_size:
-            self.buffer[:] = states_to_store[-self.buffer_size:]
+            self.buffer[:] = states_to_store[-self.buffer_size :]
             self.current_size = self.buffer_size
         else:
             end_idx = self.pointer + B
             if end_idx <= self.buffer_size:
-                self.buffer[self.pointer:end_idx] = states_to_store
+                self.buffer[self.pointer : end_idx] = states_to_store
             else:
                 overflow = end_idx - self.buffer_size
-                self.buffer[self.pointer:] = states_to_store[:-overflow]
+                self.buffer[self.pointer :] = states_to_store[:-overflow]
                 self.buffer[:overflow] = states_to_store[-overflow:]
-                
+
             self.pointer = (self.pointer + B) % self.buffer_size
             self.current_size = min(self.buffer_size, self.current_size + B)
+
 
 # ====================================================================
 # IV. ENVIRONMENT / STATE DECODER
 # ====================================================================
+
 
 class CYEnvGPU:
     # Sum-constraint trick: the 5th column is fully determined by the first 4,
@@ -401,18 +467,20 @@ class CYEnvGPU:
         self.MATRIX_SIZE = h11 * (rank - 1)
         self.ACTION_DIM = (2 * m_bound) + 1
         self.PAD_TOKEN = self.ACTION_DIM
-        
+
     def decode_batch(self, states):
         """Vectorized decoding of autoregressive tokens into full K matrices."""
         # states shape: (B, seq_len)
         charges = states - self.M_BOUND
         k_matrix_4 = charges.view(-1, self.H11, self.RANK - 1)
         k_5_col = -k_matrix_4.sum(dim=2, keepdim=True)
-        return torch.cat([k_matrix_4, k_5_col], dim=2).float() # (B, h11, rank)
+        return torch.cat([k_matrix_4, k_5_col], dim=2).float()  # (B, h11, rank)
+
 
 # ====================================================================
 # V. PPO ACTOR-CRITIC TRANSFORMER
 # ====================================================================
+
 
 class DecoderExplorer(nn.Module):
     # Actor-critic transformer that generates K-matrix entries autoregressively.
@@ -426,27 +494,43 @@ class DecoderExplorer(nn.Module):
     #   action_head: projects the last hidden state to logits over the token vocabulary
     #     (the actor — outputs the policy distribution for the next token).
     #   value_head: projects the last hidden state to a scalar (the critic — estimates V(s)).
-    def __init__(self, action_dim, matrix_size, embedding_dim=64, num_heads=4, num_layers=2, max_seq_len=50):
+    def __init__(
+        self,
+        action_dim,
+        matrix_size,
+        embedding_dim=64,
+        num_heads=4,
+        num_layers=2,
+        max_seq_len=50,
+    ):
         super().__init__()
         self.token_embedding = nn.Embedding(action_dim + 1, embedding_dim)
         self.pos_encoder = nn.Parameter(torch.randn(max_seq_len, embedding_dim) * 0.02)
-        
-        decoder_layer = nn.TransformerEncoderLayer(d_model=embedding_dim, nhead=num_heads, dim_feedforward=2 * embedding_dim, batch_first=True)
-        self.transformer_decoder = nn.TransformerEncoder(decoder_layer, num_layers=num_layers)
-        
-        self.action_head = nn.Linear(embedding_dim, action_dim) 
-        self.value_head = nn.Linear(embedding_dim, 1)           
+
+        decoder_layer = nn.TransformerEncoderLayer(
+            d_model=embedding_dim,
+            nhead=num_heads,
+            dim_feedforward=2 * embedding_dim,
+            batch_first=True,
+        )
+        self.transformer_decoder = nn.TransformerEncoder(
+            decoder_layer, num_layers=num_layers
+        )
+
+        self.action_head = nn.Linear(embedding_dim, action_dim)
+        self.value_head = nn.Linear(embedding_dim, 1)
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
             nn.init.xavier_uniform_(module.weight)
-            if module.bias is not None: nn.init.constant_(module.bias, 0)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
         elif isinstance(module, nn.Embedding):
             nn.init.uniform_(module.weight, -0.1, 0.1)
 
     def forward(self, x):
-        x_emb = self.token_embedding(x.long()) 
+        x_emb = self.token_embedding(x.long())
         seq_len = x.size(1)
         x_emb = x_emb + self.pos_encoder[:seq_len, :]
         mask = nn.Transformer.generate_square_subsequent_mask(seq_len).to(x.device)
@@ -456,42 +540,141 @@ class DecoderExplorer(nn.Module):
         value = self.value_head(last_hidden_state)
         return logits, value
 
+
 # ====================================================================
 # VI. PURE GPU TRAINING LOOP
 # ====================================================================
 
+
 def save_training_plots(history, metrics_history, filename):
     episodes = range(0, len(history))
-    if not episodes: return
+    if not episodes:
+        return
 
     def smooth(y, box_pts=100):
-        if len(y) < box_pts: return y
-        box = np.ones(box_pts)/box_pts
-        return np.convolve(y, box, mode='same')
+        if len(y) < box_pts:
+            return y
+        box = np.ones(box_pts) / box_pts
+        return np.convolve(y, box, mode="same")
 
     fig, ax1 = plt.subplots(figsize=(12, 8))
 
     def get_metric(key):
         data = metrics_history[key]
-        if len(data) < len(history): data = data + [0.0] * (len(history) - len(data))
-        return data[:len(history)]
+        if len(data) < len(history):
+            data = data + [0.0] * (len(history) - len(data))
+        return data[: len(history)]
 
-    ax1.plot(episodes, smooth(history), label='Total Reward', color='black', linewidth=2)
-    ax1.plot(episodes, smooth(get_metric('anom_bin')), label='Anomaly (Bin)', color='blue', linestyle='--', alpha=0.7)
-    ax1.plot(episodes, smooth(get_metric('anom_cont')), label='Anomaly (Cont)', color='blue', alpha=0.7)
-    ax1.plot(episodes, smooth(get_metric('stab_bin')), label='Stability (Bin)', color='green', linestyle='--', alpha=0.7)
-    ax1.plot(episodes, smooth(get_metric('stab_cont')), label='Stability (Cont)', color='green', alpha=0.7)
-    ax1.plot(episodes, smooth(get_metric('ntr_bin')), label='Non-Triv (Bin)', color='cyan', alpha=0.7)
-    ax1.plot(episodes, smooth(get_metric('rng_bin')), label='Range (Bin)', color='red', linestyle='--', alpha=0.7)
-    ax1.plot(episodes, smooth(get_metric('rng_cont')), label='Range (Cont)', color='red', alpha=0.7)
-    ax1.plot(episodes, smooth(get_metric('sum_bin')), label='Sum (Bin)', color='purple', linestyle='--', alpha=0.7)
-    ax1.plot(episodes, smooth(get_metric('sum_cont')), label='Sum (Cont)', color='purple', alpha=0.7)
-    ax1.plot(episodes, smooth(get_metric('pair_bin')), label='Pair (Bin)', color='magenta', linestyle='--', alpha=0.7)
-    ax1.plot(episodes, smooth(get_metric('pair_cont')), label='Pair (Cont)', color='magenta', alpha=0.7)
-    ax1.plot(episodes, smooth(get_metric('bnd_bin')), label='Bounds (Bin)', color='orange', linestyle='--', alpha=0.7)
-    ax1.plot(episodes, smooth(get_metric('bnd_cont')), label='Bounds (Cont)', color='orange', alpha=0.7)
-    if 'div' in metrics_history:
-        ax1.plot(episodes, smooth(get_metric('div')), label='Diversity', color='gray', linestyle=':', linewidth=2, alpha=0.8)
+    ax1.plot(
+        episodes, smooth(history), label="Total Reward", color="black", linewidth=2
+    )
+    ax1.plot(
+        episodes,
+        smooth(get_metric("anom_bin")),
+        label="Anomaly (Bin)",
+        color="blue",
+        linestyle="--",
+        alpha=0.7,
+    )
+    ax1.plot(
+        episodes,
+        smooth(get_metric("anom_cont")),
+        label="Anomaly (Cont)",
+        color="blue",
+        alpha=0.7,
+    )
+    ax1.plot(
+        episodes,
+        smooth(get_metric("stab_bin")),
+        label="Stability (Bin)",
+        color="green",
+        linestyle="--",
+        alpha=0.7,
+    )
+    ax1.plot(
+        episodes,
+        smooth(get_metric("stab_cont")),
+        label="Stability (Cont)",
+        color="green",
+        alpha=0.7,
+    )
+    ax1.plot(
+        episodes,
+        smooth(get_metric("ntr_bin")),
+        label="Non-Triv (Bin)",
+        color="cyan",
+        alpha=0.7,
+    )
+    ax1.plot(
+        episodes,
+        smooth(get_metric("rng_bin")),
+        label="Range (Bin)",
+        color="red",
+        linestyle="--",
+        alpha=0.7,
+    )
+    ax1.plot(
+        episodes,
+        smooth(get_metric("rng_cont")),
+        label="Range (Cont)",
+        color="red",
+        alpha=0.7,
+    )
+    ax1.plot(
+        episodes,
+        smooth(get_metric("sum_bin")),
+        label="Sum (Bin)",
+        color="purple",
+        linestyle="--",
+        alpha=0.7,
+    )
+    ax1.plot(
+        episodes,
+        smooth(get_metric("sum_cont")),
+        label="Sum (Cont)",
+        color="purple",
+        alpha=0.7,
+    )
+    ax1.plot(
+        episodes,
+        smooth(get_metric("pair_bin")),
+        label="Pair (Bin)",
+        color="magenta",
+        linestyle="--",
+        alpha=0.7,
+    )
+    ax1.plot(
+        episodes,
+        smooth(get_metric("pair_cont")),
+        label="Pair (Cont)",
+        color="magenta",
+        alpha=0.7,
+    )
+    ax1.plot(
+        episodes,
+        smooth(get_metric("bnd_bin")),
+        label="Bounds (Bin)",
+        color="orange",
+        linestyle="--",
+        alpha=0.7,
+    )
+    ax1.plot(
+        episodes,
+        smooth(get_metric("bnd_cont")),
+        label="Bounds (Cont)",
+        color="orange",
+        alpha=0.7,
+    )
+    if "div" in metrics_history:
+        ax1.plot(
+            episodes,
+            smooth(get_metric("div")),
+            label="Diversity",
+            color="gray",
+            linestyle=":",
+            linewidth=2,
+            alpha=0.8,
+        )
 
     ax1.set_title("Training Progress: Pure GPU Vectorized Search")
     ax1.set_xlabel("Episode")
@@ -499,8 +682,8 @@ def save_training_plots(history, metrics_history, filename):
     ax1.set_ylim(-0.05, 1.05)
     ax1.grid(True, alpha=0.3)
 
-    if 'time' in metrics_history and len(metrics_history['time']) >= len(history):
-        time_data = get_metric('time')
+    if "time" in metrics_history and len(metrics_history["time"]) >= len(history):
+        time_data = get_metric("time")
         ax_top = ax1.twiny()
         ax_top.set_xlim(ax1.get_xlim())
         tick_positions = [t for t in ax1.get_xticks() if 0 <= int(t) < len(time_data)]
@@ -514,63 +697,113 @@ def save_training_plots(history, metrics_history, filename):
         ax_top.set_xticklabels(time_labels)
         ax_top.set_xlabel("Time (hh:mm)")
 
-    if 'found' in metrics_history and any(v > 0 for v in metrics_history['found']):
+    if "found" in metrics_history and any(v > 0 for v in metrics_history["found"]):
         ax2 = ax1.twinx()
-        found_data = get_metric('found')
-        ax2.plot(episodes, found_data, label='Solutions Found', color='gold', linewidth=2.5, linestyle='-')
-        ax2.set_ylabel("Solutions Found", color='gold')
-        ax2.tick_params(axis='y', labelcolor='gold')
+        found_data = get_metric("found")
+        ax2.plot(
+            episodes,
+            found_data,
+            label="Solutions Found",
+            color="gold",
+            linewidth=2.5,
+            linestyle="-",
+        )
+        ax2.set_ylabel("Solutions Found", color="gold")
+        ax2.tick_params(axis="y", labelcolor="gold")
         ax2.set_ylim(bottom=0)
         lines2, labels2 = ax2.get_legend_handles_labels()
     else:
         lines2, labels2 = [], []
 
     lines1, labels1 = ax1.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, bbox_to_anchor=(1.12, 1), loc='upper left')
+    ax1.legend(
+        lines1 + lines2, labels1 + labels2, bbox_to_anchor=(1.12, 1), loc="upper left"
+    )
 
     plt.tight_layout()
     plt.savefig(filename)
     plt.close()
 
-def train_ppo_gpu(env, validator, novelty_buffer, model, optimizer, device, episodes=5000, gamma=0.99,
-                  found_count=0, update_batch_size=1024, use_minibatches=True, minibatch_size=128,
-                  ppo_epochs=4, clip_eps=0.2, gae_lambda=0.95, entropy_start=0.1, entropy_end=0.005, vf_coef=0.5,
-                  novelty_penalty_factor=0.25, checkpoint_path="rl_checkpoint.pth",
-                  solutions_path=None, solutions_meta_path=None,
-                  plot_filename="training_plot.png", track_diversity=False,
-                  phase0_trigger=0):
-    
+
+def train_ppo_gpu(
+    env,
+    validator,
+    novelty_buffer,
+    model,
+    optimizer,
+    device,
+    episodes=5000,
+    gamma=0.99,
+    found_count=0,
+    update_batch_size=1024,
+    use_minibatches=True,
+    minibatch_size=128,
+    ppo_epochs=4,
+    clip_eps=0.2,
+    gae_lambda=0.95,
+    entropy_start=0.1,
+    entropy_end=0.005,
+    vf_coef=0.5,
+    novelty_penalty_factor=0.25,
+    checkpoint_path="rl_checkpoint.pth",
+    solutions_path=None,
+    solutions_meta_path=None,
+    plot_filename="training_plot.png",
+    track_diversity=False,
+):
+
     model.train()
-    scaler = torch.amp.GradScaler(device.type, enabled=(device.type == 'cuda'))
+    scaler = torch.amp.GradScaler(device.type, enabled=(device.type == "cuda"))
 
     history = []
-    metrics_keys = ['anom_bin', 'anom_cont', 'stab_bin', 'stab_cont', 'rng_bin', 'rng_cont',
-                    'sum_bin', 'sum_cont', 'pair_bin', 'pair_cont', 'bnd_bin', 'bnd_cont', 'ntr_bin']
+    metrics_keys = [
+        "anom_bin",
+        "anom_cont",
+        "stab_bin",
+        "stab_cont",
+        "rng_bin",
+        "rng_cont",
+        "sum_bin",
+        "sum_cont",
+        "pair_bin",
+        "pair_cont",
+        "bnd_bin",
+        "bnd_cont",
+        "ntr_bin",
+    ]
     metrics_history = defaultdict(list)
 
     # Count carried forward from resume (no matrices kept in memory)
     found_count = found_count
 
     start_episode = 0
-    elapsed_time_prior = 0.0 
+    elapsed_time_prior = 0.0
     session_start_time = time.time()
-    
+
     if checkpoint_path and os.path.exists(checkpoint_path):
         print(f"[*] Resuming training from checkpoint: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_episode = checkpoint['episode'] + update_batch_size
-        history = checkpoint.get('history', [])
-        elapsed_time_prior = checkpoint.get('elapsed_time', 0.0)
-        for k, v in checkpoint.get('metrics_history', {}).items():
+        checkpoint = torch.load(
+            checkpoint_path, map_location=device, weights_only=False
+        )
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        start_episode = checkpoint["episode"] + update_batch_size
+        history = checkpoint.get("history", [])
+        elapsed_time_prior = checkpoint.get("elapsed_time", 0.0)
+        for k, v in checkpoint.get("metrics_history", {}).items():
             metrics_history[k] = v
         # Restore novelty buffer state
-        if novelty_buffer is not None and 'novelty_buffer' in checkpoint and checkpoint['novelty_buffer'] is not None:
-            buf = checkpoint['novelty_buffer'].to(device)
-            novelty_buffer.buffer[:buf.shape[0]] = buf
+        if (
+            novelty_buffer is not None
+            and "novelty_buffer" in checkpoint
+            and checkpoint["novelty_buffer"] is not None
+        ):
+            buf = checkpoint["novelty_buffer"].to(device)
+            novelty_buffer.buffer[: buf.shape[0]] = buf
             novelty_buffer.current_size = buf.shape[0]
-            novelty_buffer.pointer = checkpoint.get('novelty_pointer', buf.shape[0] % novelty_buffer.buffer.shape[0])
+            novelty_buffer.pointer = checkpoint.get(
+                "novelty_pointer", buf.shape[0] % novelty_buffer.buffer.shape[0]
+            )
             print(f"[*] Restored novelty buffer: {buf.shape[0]} entries")
         print(f"[*] Resumed at episode {start_episode}")
 
@@ -581,7 +814,9 @@ def train_ppo_gpu(env, validator, novelty_buffer, model, optimizer, device, epis
             # to entropy_end (low, exploitation) over the course of training.
             # The entropy bonus −H(π) in the loss encourages the policy to stay spread
             # out early on; reducing it later lets the policy commit to good solutions.
-            current_entropy_weight = max(entropy_start + (entropy_end - entropy_start) * progress, entropy_end)
+            current_entropy_weight = max(
+                entropy_start + (entropy_end - entropy_start) * progress, entropy_end
+            )
 
             # --- 1. AUTOREGRESSIVE GENERATION (GPU) ---
             # Builds the full K-matrix token sequence one entry at a time.
@@ -590,46 +825,76 @@ def train_ppo_gpu(env, validator, novelty_buffer, model, optimizer, device, epis
             # and sample the next token from the output categorical distribution.
             # We also record the log-probability and value estimate at each step for
             # use in the PPO update (these are the "old" policy rollout data).
-            states = torch.full((update_batch_size, env.MATRIX_SIZE), env.PAD_TOKEN, dtype=torch.long, device=device)
-            batch_input_states, batch_actions, batch_log_probs, batch_values = [], [], [], []
-            
+            states = torch.full(
+                (update_batch_size, env.MATRIX_SIZE),
+                env.PAD_TOKEN,
+                dtype=torch.long,
+                device=device,
+            )
+            batch_input_states, batch_actions, batch_log_probs, batch_values = (
+                [],
+                [],
+                [],
+                [],
+            )
+
             with torch.no_grad():
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
                     for step in range(env.MATRIX_SIZE):
-                        current_input = states[:, :step+1].clone()
+                        current_input = states[:, : step + 1].clone()
                         batch_input_states.append(current_input)
-                        
+
                         logits, values = model(current_input)
                         dist = torch.distributions.Categorical(logits=logits)
                         actions = dist.sample()
-                        
+
                         states[:, step] = actions
                         batch_actions.append(actions)
                         batch_log_probs.append(dist.log_prob(actions))
                         batch_values.append(values.squeeze(-1).detach())
-                
+
             # --- 2. THE PHYSICS ENGINE ---
             with torch.no_grad():
                 K_batch = env.decode_batch(states)
                 rewards, details = validator(K_batch)
                 rewards = rewards.detach()
-                
+
                 # Apply Novelty Penalty (canonical-form hash: dedup column-permutation equivalents)
-                canonical_K = canonicalize_columns(K_batch).long()           # (B, h11, rank)
-                canonical_states = canonical_K.view(K_batch.shape[0], -1)    # (B, h11*rank)
+                canonical_K = canonicalize_columns(K_batch).long()  # (B, h11, rank)
+                canonical_states = canonical_K.view(
+                    K_batch.shape[0], -1
+                )  # (B, h11*rank)
                 is_duplicate = novelty_buffer.calculate_penalty_mask(canonical_states)
-                final_rewards_t = torch.where(is_duplicate, rewards * novelty_penalty_factor, rewards)
+                final_rewards_t = torch.where(
+                    is_duplicate, rewards * novelty_penalty_factor, rewards
+                )
                 novelty_buffer.update_buffer(canonical_states)
 
             # --- 3. SAVE VALID SOLUTIONS (JSONL append, no dedup at save time) ---
             current_total_time = elapsed_time_prior + (time.time() - session_start_time)
-            valid_indices = torch.nonzero(details['is_valid_solution']).squeeze(-1)
+            valid_indices = torch.nonzero(details["is_valid_solution"]).squeeze(-1)
             if valid_indices.numel() > 0 and solutions_path:
                 valid_Ks = K_batch[valid_indices].cpu().numpy()
                 # Single GPU→CPU transfer: stack all 12 score tensors, index, transfer once
-                score_keys = ['anom_cont', 'stab_cont', 'sum_cont', 'rng_cont', 'pair_cont', 'bnd_cont',
-                              'anom_bin',  'stab_bin',  'sum_bin',  'rng_bin',  'pair_bin',  'bnd_bin']
-                score_block = torch.stack([details[k][valid_indices] for k in score_keys], dim=1).cpu().numpy()
+                score_keys = [
+                    "anom_cont",
+                    "stab_cont",
+                    "sum_cont",
+                    "rng_cont",
+                    "pair_cont",
+                    "bnd_cont",
+                    "anom_bin",
+                    "stab_bin",
+                    "sum_bin",
+                    "rng_bin",
+                    "pair_bin",
+                    "bnd_bin",
+                ]
+                score_block = (
+                    torch.stack([details[k][valid_indices] for k in score_keys], dim=1)
+                    .cpu()
+                    .numpy()
+                )
                 ep_val = current_episode + update_batch_size
                 wt_val = round(current_total_time, 2)
 
@@ -638,29 +903,47 @@ def train_ppo_gpu(env, validator, novelty_buffer, model, optimizer, device, epis
                 for i, k_mat in enumerate(valid_Ks):
                     mat_lines.append(json.dumps(k_mat.tolist()))
                     row = score_block[i]
-                    meta_lines.append(json.dumps({
-                        "episode": ep_val, "wall_time_s": wt_val,
-                        "scores": {"anom": round(float(row[0]), 4), "stab": round(float(row[1]), 4),
-                                   "sum":  round(float(row[2]), 4), "rng":  round(float(row[3]), 4),
-                                   "pair": round(float(row[4]), 4), "bnd":  round(float(row[5]), 4)},
-                        "binary": {"anom": bool(row[6] == 1.0), "stab": bool(row[7] == 1.0),
-                                   "sum":  bool(row[8] == 1.0), "rng":  bool(row[9] == 1.0),
-                                   "pair": bool(row[10] == 1.0), "bnd": bool(row[11] == 1.0)}
-                    }))
+                    meta_lines.append(
+                        json.dumps(
+                            {
+                                "episode": ep_val,
+                                "wall_time_s": wt_val,
+                                "scores": {
+                                    "anom": round(float(row[0]), 4),
+                                    "stab": round(float(row[1]), 4),
+                                    "sum": round(float(row[2]), 4),
+                                    "rng": round(float(row[3]), 4),
+                                    "pair": round(float(row[4]), 4),
+                                    "bnd": round(float(row[5]), 4),
+                                },
+                                "binary": {
+                                    "anom": bool(row[6] == 1.0),
+                                    "stab": bool(row[7] == 1.0),
+                                    "sum": bool(row[8] == 1.0),
+                                    "rng": bool(row[9] == 1.0),
+                                    "pair": bool(row[10] == 1.0),
+                                    "bnd": bool(row[11] == 1.0),
+                                },
+                            }
+                        )
+                    )
                 # Single write per file (not per matrix)
-                with open(solutions_path, 'a') as f_mat, \
-                     open(solutions_meta_path, 'a') as f_meta:
-                    f_mat.write('\n'.join(mat_lines) + '\n')
-                    f_meta.write('\n'.join(meta_lines) + '\n')
+                with open(solutions_path, "a") as f_mat, open(
+                    solutions_meta_path, "a"
+                ) as f_meta:
+                    f_mat.write("\n".join(mat_lines) + "\n")
+                    f_meta.write("\n".join(meta_lines) + "\n")
                 found_count += len(valid_Ks)
 
             history.append(final_rewards_t.mean().item())
-            if len(history) > 2000: history.pop(0)
-            
+            if len(history) > 2000:
+                history.pop(0)
+
             # RESTORED: Track detailed metrics for the plot without bloating RAM
             for k in metrics_keys:
                 metrics_history[k].append(details[k].mean().item())
-                if len(metrics_history[k]) > 2000: metrics_history[k].pop(0)
+                if len(metrics_history[k]) > 2000:
+                    metrics_history[k].pop(0)
 
             # Diversity: canary for novelty buffer health. Off by default (--track_diversity).
             # When on, computed on GPU via sorting — no CPU transfer.
@@ -670,12 +953,14 @@ def train_ppo_gpu(env, validator, novelty_buffer, model, optimizer, device, epis
                 div_val = (update_batch_size - dups) / update_batch_size
             else:
                 div_val = -1.0
-            metrics_history['div'].append(div_val)
-            if len(metrics_history['div']) > 2000: metrics_history['div'].pop(0)
+            metrics_history["div"].append(div_val)
+            if len(metrics_history["div"]) > 2000:
+                metrics_history["div"].pop(0)
 
             # Track number of solutions found (raw count, no dedup)
-            metrics_history['found'].append(found_count)
-            if len(metrics_history['found']) > 2000: metrics_history['found'].pop(0)
+            metrics_history["found"].append(found_count)
+            if len(metrics_history["found"]) > 2000:
+                metrics_history["found"].pop(0)
 
             # --- 4. VECTORIZED GENERALIZED ADVANTAGE ESTIMATION (GAE) ---
             # GAE computes advantage estimates A_t by iterating backwards through the
@@ -690,53 +975,55 @@ def train_ppo_gpu(env, validator, novelty_buffer, model, optimizer, device, epis
             advantages = []
             last_adv = torch.zeros(update_batch_size, device=device)
             last_val = torch.zeros(update_batch_size, device=device)
-            
+
             for t in reversed(range(env.MATRIX_SIZE)):
                 reward_t = final_rewards_t if t == env.MATRIX_SIZE - 1 else 0.0
-                val_t = batch_values[t].float() 
-                
+                val_t = batch_values[t].float()
+
                 delta = reward_t + gamma * last_val - val_t
                 adv = delta + gamma * gae_lambda * last_adv
                 advantages.insert(0, adv)
-                
+
                 last_val, last_adv = val_t, adv
-            
+
             advantages_stack = torch.stack(advantages)
-            b_advantages = (advantages_stack - advantages_stack.mean()) / (advantages_stack.std() + 1e-5)
+            b_advantages = (advantages_stack - advantages_stack.mean()) / (
+                advantages_stack.std() + 1e-5
+            )
             b_returns = advantages_stack + torch.stack(batch_values).float()
             b_old_log_probs = torch.stack(batch_log_probs).float().detach()
-            
+
             # --- 5. PPO UPDATE ---
             for _ in range(ppo_epochs):
                 inds = np.random.permutation(update_batch_size)
                 mb_step = minibatch_size if use_minibatches else update_batch_size
-                
+
                 for start in range(0, update_batch_size, mb_step):
-                    mb_inds = inds[start:start+mb_step]
-                
+                    mb_inds = inds[start : start + mb_step]
+
                     new_log_probs, new_values, new_entropies = [], [], []
                     optimizer.zero_grad()
-                    
+
                     with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
                         for step in range(env.MATRIX_SIZE):
                             mb_input = batch_input_states[step][mb_inds]
                             mb_acts = batch_actions[step][mb_inds]
-                            
+
                             logits, vals = model(mb_input)
                             dist = torch.distributions.Categorical(logits=logits)
-                            
+
                             new_log_probs.append(dist.log_prob(mb_acts))
                             new_values.append(vals.squeeze(-1))
                             new_entropies.append(dist.entropy())
-                        
+
                         new_log_probs_t = torch.stack(new_log_probs).flatten()
                         new_values_t = torch.stack(new_values).flatten()
                         entropies_t = torch.stack(new_entropies).flatten()
-                        
+
                         mb_old_log_probs_flat = b_old_log_probs[:, mb_inds].flatten()
                         mb_advantages_flat = b_advantages[:, mb_inds].flatten()
                         mb_returns_flat = b_returns[:, mb_inds].flatten()
-                        
+
                         # PPO clipped objective: ratio = π_θ(a|s) / π_θ_old(a|s).
                         # surr1 = unclipped policy gradient term.
                         # surr2 = clipped version that prevents ratio from straying too far
@@ -745,12 +1032,21 @@ def train_ppo_gpu(env, validator, novelty_buffer, model, optimizer, device, epis
                         # prevents destructively large policy updates.
                         ratio = torch.exp(new_log_probs_t - mb_old_log_probs_flat)
                         surr1 = ratio * mb_advantages_flat
-                        surr2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * mb_advantages_flat
-                        
+                        surr2 = (
+                            torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps)
+                            * mb_advantages_flat
+                        )
+
                         actor_loss = -torch.min(surr1, surr2).mean()
-                        critic_loss = nn.functional.mse_loss(new_values_t.float(), mb_returns_flat)
-                        total_loss = actor_loss + vf_coef * critic_loss - current_entropy_weight * entropies_t.mean()
-                    
+                        critic_loss = nn.functional.mse_loss(
+                            new_values_t.float(), mb_returns_flat
+                        )
+                        total_loss = (
+                            actor_loss
+                            + vf_coef * critic_loss
+                            - current_entropy_weight * entropies_t.mean()
+                        )
+
                     scaler.scale(total_loss).backward()
                     scaler.unscale_(optimizer)
                     nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
@@ -759,53 +1055,38 @@ def train_ppo_gpu(env, validator, novelty_buffer, model, optimizer, device, epis
 
             # --- 6. CHECKPOINTING & LOGGING ---
             # current_total_time already computed above (before solution saving)
-            metrics_history['time'].append(current_total_time)
-            if len(metrics_history['time']) > 2000: metrics_history['time'].pop(0)
+            metrics_history["time"].append(current_total_time)
+            if len(metrics_history["time"]) > 2000:
+                metrics_history["time"].pop(0)
 
-            is_checkpoint_ep = (((current_episode + update_batch_size) // update_batch_size) % 10 == 0)
+            is_checkpoint_ep = (
+                (current_episode + update_batch_size) // update_batch_size
+            ) % 10 == 0
             if is_checkpoint_ep:
-                torch.save({
-                    'episode': current_episode,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'history': history,
-                    'elapsed_time': current_total_time,
-                    'metrics_history': dict(metrics_history),
-                    'found_count': found_count,
-                    'novelty_buffer': novelty_buffer.buffer[:novelty_buffer.current_size].cpu() if novelty_buffer else None,
-                    'novelty_pointer': novelty_buffer.pointer if novelty_buffer else 0,
-                }, checkpoint_path)
+                torch.save(
+                    {
+                        "episode": current_episode,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "history": history,
+                        "elapsed_time": current_total_time,
+                        "metrics_history": dict(metrics_history),
+                        "found_count": found_count,
+                        "novelty_buffer": (
+                            novelty_buffer.buffer[: novelty_buffer.current_size].cpu()
+                            if novelty_buffer
+                            else None
+                        ),
+                        "novelty_pointer": (
+                            novelty_buffer.pointer if novelty_buffer else 0
+                        ),
+                    },
+                    checkpoint_path,
+                )
 
                 # RESTORED: Generate the matplotlib chart
                 if plot_filename:
                     save_training_plots(history, metrics_history, plot_filename)
-
-            # --- Phase 0 auto-stop: save checkpoint when Sum/Rng/Pair starts learning ---
-            if phase0_trigger > 0:
-                sum_c = details['sum_cont'].mean().item()
-                rng_c = details['rng_cont'].mean().item()
-                pair_c = details['pair_cont'].mean().item()
-                triggered = None
-                if sum_c >= phase0_trigger: triggered = f"Sum={sum_c:.3f}"
-                elif rng_c >= phase0_trigger: triggered = f"Rng={rng_c:.3f}"
-                elif pair_c >= phase0_trigger: triggered = f"Pair={pair_c:.3f}"
-                if triggered:
-                    ep_val = current_episode + update_batch_size
-                    phase0_path = checkpoint_path.replace("checkpoint_", "phase0_checkpoint_")
-                    print(f"[*] Phase 0 trigger: {triggered} >= {phase0_trigger} at ep {ep_val}. Saving phase0 checkpoint.")
-                    torch.save({
-                        'episode': current_episode,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'history': history,
-                        'elapsed_time': current_total_time,
-                        'metrics_history': dict(metrics_history),
-                        'found_count': found_count,
-                        'novelty_buffer': novelty_buffer.buffer[:novelty_buffer.current_size].cpu() if novelty_buffer else None,
-                        'novelty_pointer': novelty_buffer.pointer if novelty_buffer else 0,
-                    }, phase0_path)
-                    print(f"[*] Phase 0 complete. Exiting.")
-                    break
 
             avg_rew = final_rewards_t.mean().item()
             m, s = divmod(int(current_total_time), 60)
@@ -821,7 +1102,11 @@ def train_ppo_gpu(env, validator, novelty_buffer, model, optimizer, device, epis
 
             # File sizes: only stat on checkpoint episodes
             if is_checkpoint_ep:
-                sol_mb = os.path.getsize(solutions_path) / 1e6 if solutions_path and os.path.exists(solutions_path) else 0
+                sol_mb = (
+                    os.path.getsize(solutions_path) / 1e6
+                    if solutions_path and os.path.exists(solutions_path)
+                    else 0
+                )
 
             print(
                 f"Ep {current_episode + update_batch_size}/{episodes} | Time: {time_str} | Rew: {avg_rew:.3f} | "
@@ -835,129 +1120,353 @@ def train_ppo_gpu(env, validator, novelty_buffer, model, optimizer, device, epis
             # --- 7. AGGRESSIVE GARBAGE COLLECTION ---
             # Force Linux to release fragmented System RAM and PyTorch to release VRAM caches
             del states, batch_input_states, batch_actions, batch_log_probs, batch_values
-            del K_batch, rewards, details, advantages_stack, b_advantages, b_returns, b_old_log_probs
+            del (
+                K_batch,
+                rewards,
+                details,
+                advantages_stack,
+                b_advantages,
+                b_returns,
+                b_old_log_probs,
+            )
             gc.collect()
             torch.cuda.empty_cache()
 
     except KeyboardInterrupt:
         print("\n\n[!] Training interrupted by user (Ctrl+C).")
         if checkpoint_path:
-             current_total_time = elapsed_time_prior + (time.time() - session_start_time)
-             print(f"[*] Saving emergency checkpoint to {checkpoint_path}...")
-             torch.save({
-                 'episode': current_episode,
-                 'model_state_dict': model.state_dict(),
-                 'optimizer_state_dict': optimizer.state_dict(),
-                 'history': history,
-                 'elapsed_time': current_total_time,
-                 'metrics_history': dict(metrics_history),
-                 'found_count': found_count,
-                 'novelty_buffer': novelty_buffer.buffer[:novelty_buffer.current_size].cpu() if novelty_buffer else None,
-                 'novelty_pointer': novelty_buffer.pointer if novelty_buffer else 0,
-             }, checkpoint_path)
+            current_total_time = elapsed_time_prior + (time.time() - session_start_time)
+            print(f"[*] Saving emergency checkpoint to {checkpoint_path}...")
+            torch.save(
+                {
+                    "episode": current_episode,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "history": history,
+                    "elapsed_time": current_total_time,
+                    "metrics_history": dict(metrics_history),
+                    "found_count": found_count,
+                    "novelty_buffer": (
+                        novelty_buffer.buffer[: novelty_buffer.current_size].cpu()
+                        if novelty_buffer
+                        else None
+                    ),
+                    "novelty_pointer": novelty_buffer.pointer if novelty_buffer else 0,
+                },
+                checkpoint_path,
+            )
     finally:
         # RESTORED: Save plot even if it crashes or finishes
         if plot_filename:
             save_training_plots(history, metrics_history, plot_filename)
-        
+
     return history
+
 
 # ====================================================================
 # VII. SETUP AND RUN
 # ====================================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="High-Speed Pure GPU PPO Agent for Calabi-Yau Vector Bundle Exploration")
-    
+    parser = argparse.ArgumentParser(
+        description="High-Speed Pure GPU PPO Agent for Calabi-Yau Vector Bundle Exploration"
+    )
+
     # Target Setup
-    parser.add_argument('--h11', type=int, default=4, help='H11 of the manifold')
-    parser.add_argument('--cy_index', type=int, default=7862, help='Index of the CY manifold in database')
-    parser.add_argument('--gamma', type=int, help='Specific target Gamma value to use.')
-    parser.add_argument('--db_dir', type=str, default='cy_geometry_exports', help='Directory containing the parsed geometry json files (default: cy_geometry_exports)')
-    
+    parser.add_argument("--h11", type=int, default=4, help="H11 of the manifold")
+    parser.add_argument(
+        "--cy_index",
+        type=int,
+        default=7862,
+        help="Index of the CY manifold in database",
+    )
+    parser.add_argument("--gamma", type=int, help="Specific target Gamma value to use.")
+    parser.add_argument(
+        "--db_dir",
+        type=str,
+        default="cy_geometry_exports",
+        help="Directory containing the parsed geometry json files (default: cy_geometry_exports)",
+    )
+
     # Physical Parameters
-    parser.add_argument('--rank', type=int, default=5, help='Rank of the vector bundle')
-    parser.add_argument('--m_bound', type=int, default=8, help='Max integer charge bound for matrices')
-    parser.add_argument('--stability_range', type=int, default=2, help='Integer range for generating stability test vectors (e.g. 2 means [-2, 2])')
-    parser.add_argument('--enforce_bounds', dest='ignore_bounds', action='store_false', help='Enforce charge bounds strictly during validation')
+    parser.add_argument("--rank", type=int, default=5, help="Rank of the vector bundle")
+    parser.add_argument(
+        "--m_bound", type=int, default=8, help="Max integer charge bound for matrices"
+    )
+    parser.add_argument(
+        "--stability_range",
+        type=int,
+        default=2,
+        help="Integer range for generating stability test vectors (e.g. 2 means [-2, 2])",
+    )
+    parser.add_argument(
+        "--enforce_bounds",
+        dest="ignore_bounds",
+        action="store_false",
+        help="Enforce charge bounds strictly during validation",
+    )
     parser.set_defaults(ignore_bounds=True)
 
     # Reward Weights
-    parser.add_argument('--anom_weight', type=float, default=2.0, help='Weight for Anomaly Cancellation penalty')
-    parser.add_argument('--stab_weight', type=float, default=2.0, help='Weight for Bogomolov Stability bounds penalty')
-    parser.add_argument('--sum_weight', type=float, default=10.0, help='Weight for Chiral Index Sum penalty')
-    parser.add_argument('--rng_weight', type=float, default=5.0, help='Weight for Chiral Index Range bounds penalty')
-    parser.add_argument('--pair_weight', type=float, default=2.0, help='Weight for Pairwise Index penalty')
-    parser.add_argument('--bnd_weight', type=float, default=1.0, help='Weight for Charge Bounds exceeding penalty')
+    parser.add_argument(
+        "--anom_weight",
+        type=float,
+        default=1.0,
+        help="Weight for Anomaly Cancellation penalty (default: 1.0)",
+    )
+    parser.add_argument(
+        "--stab_weight",
+        type=float,
+        default=1.0,
+        help="Weight for Bogomolov Stability bounds penalty (default: 1.0)",
+    )
+    parser.add_argument(
+        "--sum_weight",
+        type=float,
+        default=1.0,
+        help="Weight for Chiral Index Sum penalty (default: 1.0)",
+    )
+    parser.add_argument(
+        "--rng_weight",
+        type=float,
+        default=1.0,
+        help="Weight for Chiral Index Range bounds penalty (default: 1.0)",
+    )
+    parser.add_argument(
+        "--pair_weight",
+        type=float,
+        default=1.0,
+        help="Weight for Pairwise Index penalty (default: 1.0)",
+    )
+    parser.add_argument(
+        "--bnd_weight",
+        type=float,
+        default=1.0,
+        help="Weight for Charge Bounds exceeding penalty (default: 1.0)",
+    )
     # Reward Coefficients (linear contribution of each term to base_score)
-    parser.add_argument('--anom_coef', type=float, default=1.0)
-    parser.add_argument('--stab_coef', type=float, default=1.0)
-    parser.add_argument('--sum_coef',  type=float, default=1.0)
-    parser.add_argument('--rng_coef',  type=float, default=1.0)
-    parser.add_argument('--pair_coef', type=float, default=1.0)
-    parser.add_argument('--bnd_coef',  type=float, default=1.0)
+    parser.add_argument("--anom_coef", type=float, default=1.0, help="(default: 1.0)")
+    parser.add_argument("--stab_coef", type=float, default=1.0, help="(default: 1.0)")
+    parser.add_argument("--sum_coef", type=float, default=1.0, help="(default: 1.0)")
+    parser.add_argument("--rng_coef", type=float, default=1.0, help="(default: 1.0)")
+    parser.add_argument("--pair_coef", type=float, default=1.0, help="(default: 1.0)")
+    parser.add_argument("--bnd_coef", type=float, default=1.0, help="(default: 1.0)")
 
     # Network Architecture
-    parser.add_argument('--embedding_dim', type=int, default=64, help='Embedding dimension for the Transformer')
-    parser.add_argument('--num_heads', type=int, default=4, help='Number of attention heads')
-    parser.add_argument('--num_layers', type=int, default=2, help='Number of Transformer layers')
+    parser.add_argument(
+        "--embedding_dim",
+        type=int,
+        default=128,
+        help="Embedding dimension for the Transformer (default: 128)",
+    )
+    parser.add_argument(
+        "--num_heads",
+        type=int,
+        default=8,
+        help="Number of attention heads (default: 8)",
+    )
+    parser.add_argument(
+        "--num_layers",
+        type=int,
+        default=4,
+        help="Number of Transformer layers (default: 4)",
+    )
 
     # Training Hyperparameters
-    parser.add_argument('--episodes', type=int, default=1000000, help='Total number of RL training episodes')
-    parser.add_argument('--batch_size', type=int, default=1024, help='Parallel generation batch size (scales with VRAM)')
-    parser.add_argument('--use_minibatches', action='store_true', help='Enable mini-batching during PPO update for stability')
-    parser.add_argument('--minibatch_size', type=int, default=128, help='Size of mini-batches if enabled')
-    parser.add_argument('--ppo_epochs', type=int, default=4, help='Number of PPO optimization epochs per batch')
-    parser.add_argument('--lr', type=float, default=1e-4, help='Adam Optimizer Learning Rate')
-    parser.add_argument('--entropy_start', type=float, default=0.1, help='Initial entropy coefficient (Exploration)')
-    parser.add_argument('--entropy_end', type=float, default=0.01, help='Final entropy coefficient (Exploitation)')
-    parser.add_argument('--discount', type=float, default=0.99, help='Gamma discount factor for RL rewards')
-    parser.add_argument('--gae_lambda', type=float, default=0.95, help='Lambda parameter for GAE')
-    parser.add_argument('--clip_eps', type=float, default=0.2, help='PPO Policy clipping parameter')
-    parser.add_argument('--vf_coef', type=float, default=0.5, help='Value Function loss coefficient')
+    parser.add_argument(
+        "--episodes",
+        type=int,
+        default=10000000,
+        help="Total number of RL training episodes (default: 10000000)",
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=8192,
+        help="Parallel generation batch size (scales with VRAM) (default: 8192)",
+    )
+    parser.add_argument(
+        "--use_minibatches",
+        action="store_true",
+        help="Enable mini-batching during PPO update for stability",
+    )
+    parser.add_argument(
+        "--minibatch_size",
+        type=int,
+        default=1024,
+        help="Size of mini-batches if enabled (default: 1024)",
+    )
+    parser.add_argument(
+        "--ppo_epochs",
+        type=int,
+        default=4,
+        help="Number of PPO optimization epochs per batch (default: 4)",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=0.0003,
+        help="Adam Optimizer Learning Rate (default: 0.0003)",
+    )
+    parser.add_argument(
+        "--entropy_start",
+        type=float,
+        default=0.05,
+        help="Initial entropy coefficient (Exploration) (default: 0.05)",
+    )
+    parser.add_argument(
+        "--entropy_end",
+        type=float,
+        default=0.05,
+        help="Final entropy coefficient (Exploitation) (default: 0.05)",
+    )
+    parser.add_argument(
+        "--discount",
+        type=float,
+        default=0.99,
+        help="Gamma discount factor for RL rewards (default: 0.99)",
+    )
+    parser.add_argument(
+        "--gae_lambda",
+        type=float,
+        default=0.95,
+        help="Lambda parameter for GAE (default: 0.95)",
+    )
+    parser.add_argument(
+        "--clip_eps",
+        type=float,
+        default=0.2,
+        help="PPO Policy clipping parameter (default: 0.2)",
+    )
+    parser.add_argument(
+        "--vf_coef",
+        type=float,
+        default=0.5,
+        help="Value Function loss coefficient (default: 0.5)",
+    )
 
     # Novelty Penalty
-    parser.add_argument('--disable_novelty_penalty', action='store_true', help='Turn off penalty for repeating previously generated matrices')
-    parser.add_argument('--novelty_penalty_factor', type=float, default=0.25, help='Multiplier for score if matrix is a duplicate (e.g. 0.25 cuts score by 75 percent)')
-    parser.add_argument('--novelty_buffer_size', type=int, default=2000, help='Size of the pure GPU FIFO rolling history buffer')
+    parser.add_argument(
+        "--disable_novelty_penalty",
+        action="store_true",
+        help="Turn off penalty for repeating previously generated matrices",
+    )
+    parser.add_argument(
+        "--novelty_penalty_factor",
+        type=float,
+        default=0.5,
+        help="Multiplier for score if matrix is a duplicate (e.g. 0.25 cuts score by 75 percent) (default: 0.5)",
+    )
+    parser.add_argument(
+        "--novelty_buffer_size",
+        type=int,
+        default=32768,
+        help="Size of the pure GPU FIFO rolling history buffer (default: 32768)",
+    )
 
     # Run Configuration
-    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Compute device to run on (e.g., cuda, cpu)')
-    parser.add_argument('--run_id', type=str, default='', help='Suffix ID to append to generated output files')
-    parser.add_argument('--resume', action='store_true', help='Resume training from existing checkpoint if found')
-    parser.add_argument('--no_plot', action='store_true', help='Disable generating matplotlib charts')
-    parser.add_argument('--track_diversity', action='store_true', help='Compute batch diversity metric on GPU (off by default)')
-    parser.add_argument('--plot_only', action='store_true', help='Only generate charts from checkpoint and exit immediately')
-    parser.add_argument('--no_bonus', dest='use_bonus', action='store_false', help='Disable the +5.0 bonus reward for perfect solutions')
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda:0" if torch.cuda.is_available() else "cpu",
+        help="Compute device to run on (e.g., cuda:0, cpu) (default: cuda:0 if available else cpu)",
+    )
+    parser.add_argument(
+        "--run_id",
+        type=str,
+        default="",
+        help="Suffix ID to append to generated output files",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Directory to save outputs. Defaults to sol_runs_{run_id} or sol_runs",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume training from existing checkpoint if found",
+    )
+    parser.add_argument(
+        "--no_plot", action="store_true", help="Disable generating matplotlib charts"
+    )
+    parser.add_argument(
+        "--track_diversity",
+        action="store_true",
+        help="Compute batch diversity metric on GPU (off by default)",
+    )
+    parser.add_argument(
+        "--plot_only",
+        action="store_true",
+        help="Only generate charts from checkpoint and exit immediately",
+    )
+    parser.add_argument(
+        "--no_bonus",
+        dest="use_bonus",
+        action="store_false",
+        help="Disable the +5.0 bonus reward for perfect solutions",
+    )
     parser.set_defaults(use_bonus=True)
-    parser.add_argument('--phase0_trigger', type=float, default=0,
-                        help='Stop training when any of Sum/Rng/Pair cont score exceeds this threshold (0=disabled)')
-    parser.add_argument('--seed', type=int, default=42, help='Global random seed for reproducibility')
-    
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Global random seed for reproducibility (default: 42)",
+    )
+
     args = parser.parse_args()
 
     set_seed(args.seed)
     device = torch.device(args.device)
 
     all_manifolds = load_geometry_data(args.h11, dir_path=args.db_dir)
-    if not all_manifolds: exit()
-    geometry_data = next((m for m in all_manifolds if m['index_in_database'] == args.cy_index), None)
-    if geometry_data is None: exit()
+    if not all_manifolds:
+        exit()
+    geometry_data = next(
+        (m for m in all_manifolds if m["index_in_database"] == args.cy_index), None
+    )
+    if geometry_data is None:
+        exit()
     # Gamma (γ) is the topological invariant that sets the target chiral index sum (-3γ).
     # If --gamma is passed explicitly, use it. Otherwise fall back to the first value in
     # the geometry JSON's 'gamma' list (the manifold's natural gamma from the database).
-    target_gamma = args.gamma if args.gamma is not None else geometry_data.get('gamma', [1])[0]
+    target_gamma = (
+        args.gamma if args.gamma is not None else geometry_data.get("gamma", [1])[0]
+    )
 
     kappa, c2_tx = prepare_geometry_objects(geometry_data)
-    weights = {'anom': args.anom_weight, 'stab': args.stab_weight, 'sum': args.sum_weight, 'rng': args.rng_weight, 'pair': args.pair_weight, 'bnd': args.bnd_weight}
-    coefs   = {'anom': args.anom_coef,   'stab': args.stab_coef,   'sum': args.sum_coef,   'rng': args.rng_coef,   'pair': args.pair_coef,   'bnd': args.bnd_coef}
+    weights = {
+        "anom": args.anom_weight,
+        "stab": args.stab_weight,
+        "sum": args.sum_weight,
+        "rng": args.rng_weight,
+        "pair": args.pair_weight,
+        "bnd": args.bnd_weight,
+    }
+    coefs = {
+        "anom": args.anom_coef,
+        "stab": args.stab_coef,
+        "sum": args.sum_coef,
+        "rng": args.rng_coef,
+        "pair": args.pair_coef,
+        "bnd": args.bnd_coef,
+    }
 
     suffix = f"_{args.run_id}" if args.run_id else ""
     stem = f"h11_{args.h11}_idx_{args.cy_index}{suffix}"
-    solutions_path      = f"solutions_{stem}.jsonl"
-    solutions_meta_path = f"solutions_meta_{stem}.jsonl"
-    checkpoint_filename = f"checkpoint_{stem}.pth"
-    plot_filename       = f"plot_{stem}.png"
+
+    out_dir = (
+        args.output_dir
+        if args.output_dir
+        else (f"sol_runs_{args.run_id}" if args.run_id else "sol_runs")
+    )
+    os.makedirs(out_dir, exist_ok=True)
+
+    solutions_path = os.path.join(out_dir, f"solutions_{stem}.jsonl")
+    solutions_meta_path = os.path.join(out_dir, f"solutions_meta_{stem}.jsonl")
+    checkpoint_filename = os.path.join(out_dir, f"checkpoint_{stem}.pth")
+    plot_filename = os.path.join(out_dir, f"plot_{stem}.png")
 
     if args.plot_only:
         exit()
@@ -967,7 +1476,7 @@ if __name__ == "__main__":
         if not os.path.exists(path):
             return 0
         count = 0
-        with open(path, 'r') as f:
+        with open(path, "r") as f:
             for line in f:
                 if line.strip():
                     count += 1
@@ -979,16 +1488,29 @@ if __name__ == "__main__":
     n_mat = _count_lines(solutions_path)
     n_meta = _count_lines(solutions_meta_path)
     if n_meta > n_mat and n_mat > 0:
-        print(f"[!] solutions: meta has {n_meta} lines but matrix has {n_mat}. Truncating meta.")
-        with open(solutions_meta_path, 'r') as f:
+        print(
+            f"[!] solutions: meta has {n_meta} lines but matrix has {n_mat}. Truncating meta."
+        )
+        with open(solutions_meta_path, "r") as f:
             lines = [f.readline() for _ in range(n_mat)]
-        with open(solutions_meta_path, 'w') as f:
+        with open(solutions_meta_path, "w") as f:
             f.writelines(lines)
 
     env = CYEnvGPU(args.h11, args.rank, args.m_bound)
-    
+
     # Initialize pure GPU Validator
-    validator = GPUValidator(kappa, c2_tx, args.rank, target_gamma, args.m_bound, weights, coefs, device, args.stability_range, ignore_bounds=args.ignore_bounds)
+    validator = GPUValidator(
+        kappa,
+        c2_tx,
+        args.rank,
+        target_gamma,
+        args.m_bound,
+        weights,
+        coefs,
+        device,
+        args.stability_range,
+        ignore_bounds=args.ignore_bounds,
+    )
     validator.use_bonus = args.use_bonus
     validator.bonus_max = 5.0 if args.use_bonus else 0.0
     try:
@@ -996,17 +1518,20 @@ if __name__ == "__main__":
         validator = torch.compile(validator)
     except Exception as e:
         print(f"[*] torch.compile() unavailable: {e}")
-        
+
     # Buffer hashes the FULL canonicalized K (h11*rank ints), not the token sequence.
-    novelty_buffer = GPUNoveltyBuffer(args.novelty_buffer_size, env.H11 * env.RANK, device)
-    
+    novelty_buffer = GPUNoveltyBuffer(
+        args.novelty_buffer_size, env.H11 * env.RANK, device
+    )
+
     model = DecoderExplorer(
-        env.ACTION_DIM, env.MATRIX_SIZE, 
-        embedding_dim=args.embedding_dim, 
-        num_heads=args.num_heads, 
-        num_layers=args.num_layers
+        env.ACTION_DIM,
+        env.MATRIX_SIZE,
+        embedding_dim=args.embedding_dim,
+        num_heads=args.num_heads,
+        num_layers=args.num_layers,
     ).to(device)
-    
+
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     try:
@@ -1021,7 +1546,7 @@ if __name__ == "__main__":
         os.remove(checkpoint_filename)
 
     num_params = sum(p.numel() for p in model.parameters())
-    sep  = "=" * 50
+    sep = "=" * 50
     dash = "-" * 50
     print(f"\n{sep}")
     print(f"  MANIFOLD: CY #{args.cy_index}  (h11={args.h11})")
@@ -1045,24 +1570,32 @@ if __name__ == "__main__":
     print(f" - Use Bonus:        {args.use_bonus}")
     print(dash)
     print(f"Reward Weights:")
-    print(f" - Anom:  {args.anom_weight:<5} | Stab: {args.stab_weight:<5} | Sum:  {args.sum_weight}")
-    print(f" - Rng:   {args.rng_weight:<5} | Pair: {args.pair_weight:<5} | Bnd:  {args.bnd_weight}")
+    print(
+        f" - Anom:  {args.anom_weight:<5} | Stab: {args.stab_weight:<5} | Sum:  {args.sum_weight}"
+    )
+    print(
+        f" - Rng:   {args.rng_weight:<5} | Pair: {args.pair_weight:<5} | Bnd:  {args.bnd_weight}"
+    )
     print(f"Reward Coefficients:")
-    print(f" - Anom:  {args.anom_coef:<5} | Stab: {args.stab_coef:<5} | Sum:  {args.sum_coef}")
-    print(f" - Rng:   {args.rng_coef:<5} | Pair: {args.pair_coef:<5} | Bnd:  {args.bnd_coef}")
-    _active = [n for n, v in coefs.items() if v > 0 and not (n == 'bnd' and args.ignore_bounds)]
+    print(
+        f" - Anom:  {args.anom_coef:<5} | Stab: {args.stab_coef:<5} | Sum:  {args.sum_coef}"
+    )
+    print(
+        f" - Rng:   {args.rng_coef:<5} | Pair: {args.pair_coef:<5} | Bnd:  {args.bnd_coef}"
+    )
+    _active = [
+        n for n, v in coefs.items() if v > 0 and not (n == "bnd" and args.ignore_bounds)
+    ]
     print(f" - Active constraints (nonzero coef): {_active}")
     print(f" - Save gate requires all active constraints + Ntr to pass.")
-    if args.phase0_trigger > 0:
-        print(f" - Phase 0 trigger:  {args.phase0_trigger} (stop when Sum/Rng/Pair cont >= threshold)")
-    else:
-        print(f" - Phase 0 trigger:  DISABLED")
     print(dash)
     print(f"Training Config:")
     print(f" - Run ID:           {args.run_id if args.run_id else '(none)'}")
     print(f" - Episodes:         {args.episodes:,}")
     print(f" - Batch Size:       {args.batch_size}")
-    print(f" - Mini-batch Size:  {args.minibatch_size if args.use_minibatches else '(disabled)'}")
+    print(
+        f" - Mini-batch Size:  {args.minibatch_size if args.use_minibatches else '(disabled)'}"
+    )
     print(f" - PPO Epochs:       {args.ppo_epochs}")
     print(f" - Learning Rate:    {args.lr}")
     print(f" - Discount:         {args.discount}")
@@ -1078,17 +1611,30 @@ if __name__ == "__main__":
     print(f"{sep}\n")
 
     history = train_ppo_gpu(
-        env, validator, novelty_buffer, model, optimizer, device,
-        episodes=args.episodes, gamma=args.discount,
+        env,
+        validator,
+        novelty_buffer,
+        model,
+        optimizer,
+        device,
+        episodes=args.episodes,
+        gamma=args.discount,
         found_count=found_count,
-        update_batch_size=args.batch_size, use_minibatches=args.use_minibatches,
-        minibatch_size=args.minibatch_size, ppo_epochs=args.ppo_epochs,
-        clip_eps=args.clip_eps, gae_lambda=args.gae_lambda,
-        entropy_start=args.entropy_start, entropy_end=args.entropy_end,
-        vf_coef=args.vf_coef, novelty_penalty_factor=1.0 if args.disable_novelty_penalty else args.novelty_penalty_factor,
+        update_batch_size=args.batch_size,
+        use_minibatches=args.use_minibatches,
+        minibatch_size=args.minibatch_size,
+        ppo_epochs=args.ppo_epochs,
+        clip_eps=args.clip_eps,
+        gae_lambda=args.gae_lambda,
+        entropy_start=args.entropy_start,
+        entropy_end=args.entropy_end,
+        vf_coef=args.vf_coef,
+        novelty_penalty_factor=(
+            1.0 if args.disable_novelty_penalty else args.novelty_penalty_factor
+        ),
         checkpoint_path=checkpoint_filename,
-        solutions_path=solutions_path, solutions_meta_path=solutions_meta_path,
+        solutions_path=solutions_path,
+        solutions_meta_path=solutions_meta_path,
         plot_filename=plot_filename if not args.no_plot else None,
         track_diversity=args.track_diversity,
-        phase0_trigger=args.phase0_trigger,
     )

@@ -92,47 +92,47 @@ This will populate `cy_geometry_exports/` with `all_geometry_h11_{h11}.json` fil
 - `--gamma`: Specific target Gamma value to use.
 - `--db_dir`: Directory containing the parsed geometry json files (default: `cy_geometry_exports`)
 - `--rank`: Rank of the vector bundle
-- `--m_bound`: Max integer charge bound for matrices
-- `--stability_range`: Integer range for generating stability test vectors (e.g. 2 means [-2, 2])
+- `--m_bound`: Max integer charge bound for matrices (default: 8)
+- `--stability_range`: Integer range for generating stability test vectors (e.g. default 2 means [-2, 2])
 - `--enforce_bounds`: Enforce charge bounds strictly during validation
-- `--anom_weight`: Weight for Anomaly Cancellation penalty
-- `--stab_weight`: Weight for Bogomolov Stability bounds penalty
-- `--sum_weight`: Weight for Chiral Index Sum penalty
-- `--rng_weight`: Weight for Chiral Index Range bounds penalty
-- `--pair_weight`: Weight for Pairwise Index penalty
-- `--bnd_weight`: Weight for Charge Bounds exceeding penalty
-- `--anom_coef`, `--stab_coef`, `--sum_coef`, `--rng_coef`, `--pair_coef`, `--bnd_coef`: Coefficient flags for respective penalties
-- `--embedding_dim`: Embedding dimension for the Transformer
-- `--num_heads`: Number of attention heads
-- `--num_layers`: Number of Transformer layers
-- `--episodes`: Total number of RL training episodes
-- `--batch_size`: Parallel generation batch size (scales with VRAM)
+- `--anom_weight`: Weight for Anomaly Cancellation penalty (default: 1.0)
+- `--stab_weight`: Weight for Bogomolov Stability bounds penalty (default: 1.0)
+- `--sum_weight`: Weight for Chiral Index Sum penalty (default: 1.0)
+- `--rng_weight`: Weight for Chiral Index Range bounds penalty (default: 1.0)
+- `--pair_weight`: Weight for Pairwise Index penalty (default: 1.0)
+- `--bnd_weight`: Weight for Charge Bounds exceeding penalty (default: 1.0)
+- `--anom_coef`, `--stab_coef`, `--sum_coef`, `--rng_coef`, `--pair_coef`, `--bnd_coef`: Coefficient flags for respective penalties (default: 1.0)
+- `--embedding_dim`: Embedding dimension for the Transformer (default: 128)
+- `--num_heads`: Number of attention heads (default: 8)
+- `--num_layers`: Number of Transformer layers (default: 4)
+- `--episodes`: Total number of RL training episodes (default: 10000000)
+- `--batch_size`: Parallel generation batch size (scales with VRAM) (default: 8192)
 - `--use_minibatches`: Enable mini-batching during PPO update for stability
-- `--minibatch_size`: Size of mini-batches if enabled
-- `--ppo_epochs`: Number of PPO optimization epochs per batch
-- `--lr`: Adam Optimizer Learning Rate
-- `--entropy_start`: Initial entropy coefficient (Exploration)
-- `--entropy_end`: Final entropy coefficient (Exploitation)
-- `--discount`: Gamma discount factor for RL rewards
-- `--gae_lambda`: Lambda parameter for GAE
-- `--clip_eps`: PPO Policy clipping parameter
-- `--vf_coef`: Value Function loss coefficient
+- `--minibatch_size`: Size of mini-batches if enabled (default: 1024)
+- `--ppo_epochs`: Number of PPO optimization epochs per batch (default: 4)
+- `--lr`: Adam Optimizer Learning Rate (default: 0.0003)
+- `--entropy_start`: Initial entropy coefficient (Exploration) (default: 0.05)
+- `--entropy_end`: Final entropy coefficient (Exploitation) (default: 0.05)
+- `--discount`: Gamma discount factor for RL rewards (default: 0.99)
+- `--gae_lambda`: Lambda parameter for GAE (default: 0.95)
+- `--clip_eps`: PPO Policy clipping parameter (default: 0.2)
+- `--vf_coef`: Value Function loss coefficient (default: 0.5)
 - `--disable_novelty_penalty`: Turn off penalty for repeating previously generated matrices
-- `--novelty_penalty_factor`: Multiplier for score if matrix is a duplicate (e.g. 0.25 cuts score by 75 percent)
-- `--novelty_buffer_size`: Size of the pure GPU FIFO rolling history buffer
-- `--device`: Compute device to run on (e.g., cuda, cpu)
+- `--novelty_penalty_factor`: Multiplier for score if matrix is a duplicate (e.g. 0.25 cuts score by 75 percent) (default: 0.5)
+- `--novelty_buffer_size`: Size of the pure GPU FIFO rolling history buffer (default: 32768)
+- `--device`: Compute device to run on (e.g., cuda:0, cpu) (default: cuda:0 if available else cpu)
 - `--run_id`: Suffix ID to append to generated output files
+- `--output_dir`: Directory to save outputs (default: sol_runs_{run_id} or sol_runs)
 - `--resume`: Resume training from existing checkpoint if found
 - `--no_plot`: Disable generating matplotlib charts
 - `--track_diversity`: Compute batch diversity metric on GPU (off by default)
 - `--plot_only`: Only generate charts from checkpoint and exit immediately
 - `--no_bonus`: Disable the +5.0 bonus reward for perfect solutions
-- `--phase0_trigger`: Stop training when any of Sum/Rng/Pair cont score exceeds this threshold (0=disabled)
-- `--seed`: Global random seed for reproducibility
+- `--seed`: Global random seed for reproducibility (default: 42)
 
 **Example Usage**:
 ```bash
-python LB-Explorer.py --h11 6 --cy_index 0 --episodes 10000000 --batch_size 8192 --db_dir cy_geometry_exports
+python LB-Explorer.py --h11 5 --cy_index 7447 --gamma 2 --m_bound 8 --stability_range 2 --use_minibatches --no_bonus --run_id h11_5_g2__cy7447__s42 --output_dir sol_runs_h11_5_g2__cy7447__s42
 ```
 
 ## Post-Processing Scripts
