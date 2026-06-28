@@ -207,7 +207,7 @@ class GPUValidator(nn.Module):
         # Violation is the positive part of (c2(V) - c2(TX)); we sum over divisors.
         # cont score uses a log-barrier that approaches 1 as error → 0 and 0 as error → ∞.
         dot_jk = torch.einsum("bja, bka -> bjk", K, K)
-        c2_V = -0.5 * torch.einsum("ijk, bjk -> bi", self.kappa, dot_jk)
+        c2_V = 0.5 * torch.einsum("ijk, bjk -> bi", self.kappa, dot_jk)
         anom_violation = torch.clamp(c2_V - self.c2_tx.unsqueeze(0), min=0)
         total_anom_error = anom_violation.mean(dim=1)
         anom_cont = 1.0 / (1.0 + self.weights["anom"] * torch.log1p(total_anom_error))
