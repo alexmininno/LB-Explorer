@@ -20,6 +20,7 @@ mpmath
 networkx
 numpy
 orjson==3.11.5
+ortools
 packaging==26.0
 pandas==2.3.3
 pillow
