@@ -1,6 +1,6 @@
 # LB-Explorer
 
-This repository contains the code and tools necessary to reproduce the findings of the paper [arXiv:2607.XXXXX](https://arxiv.org/abs/2607.XXXXX).
+This repository contains the code and tools necessary to reproduce the findings of the paper [arXiv:2607.00078](https://arxiv.org/abs/2607.00078).
 
 ## Installation and Requirements
 
