@@ -268,6 +268,7 @@ python scripts/check_polystability.py \
 
 ### 5. `scripts/check_lb_spec.py`
 Check exact spectrum and equivariance constraints for line bundle solutions.
+
 - `--m_bound`: Max charge bound for matrix elements (default: 2)
 - `--workers`: Number of parallel workers (default: 8)
 - `--cy_index`: List of CY IDs to process (default: all)
@@ -283,6 +284,8 @@ python scripts/check_lb_spec.py \
     --m_bound 2 \
     --cy_index 7890
 ```
+> [!WARNING]
+> This script relies on `pyCICY` for the computation of the line bundle cohomologies.
 
 ### 6. `scripts/generate_sym_groups.py`
 Generate topological and configuration symmetry groups for CICYs. NOTE: Running this script requires SageMath to be installed on your system.
